@@ -2,7 +2,7 @@
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from anki.track import Track, Piece, START, TURN
 from game.game import CarState, Game
 
@@ -12,6 +12,7 @@ class GridTests(unittest.TestCase):
         self.c = CarState(v, 0, Mock(), 800)
         self.g = Game(Mock(), [self.c], Track([Piece(34, START), Piece(18, TURN, 'R')]), True, None)
         self.c.grid_state = 'driving'
+        self.c.ai = True
         self.c.grid_t0 = time.monotonic()
         self.c.loc.index, self.c.loc.on_track = 0, True
         self.c.loc.last_update = time.monotonic()
@@ -43,13 +44,49 @@ class GridTests(unittest.TestCase):
         self.assertEqual(self.c.grid_state, 'retry lap')
         self.c.hard_stop.assert_not_called()
 
-    def test_failed_attempt_limit_excludes_car(self):
+    def test_failed_attempts_keep_retrying(self):
         self.c.grid_laps = 2
         self.c.loc.frac = 0.85
         self.g.grid_tick(0)
-        self.assertEqual(self.c.grid_state, 'missed start')
-        self.g.start()
-        self.assertFalse(self.c.participates())
+        self.assertEqual(self.c.grid_state, 'retry lap')
+        self.assertTrue(self.c.participates())
+        self.c.hard_stop.assert_not_called()
+
+    def test_missing_position_retries_with_pauses_without_timeout(self):
+        self.c.loc.on_track = False
+        with patch('game.game.time.monotonic', return_value=1000):
+            self.assertFalse(self.g.grid_tick(0))
+        self.c.command_speed.assert_called_with(250, 1000)
+        with patch('game.game.time.monotonic', return_value=1002):
+            self.assertFalse(self.g.grid_tick(0))
+        self.c.command_speed.assert_called_with(0, 1002)
+        with patch('game.game.time.monotonic', return_value=1350):
+            self.assertFalse(self.g.grid_tick(0))
+        self.c.command_speed.assert_called_with(250, 1350)
+        self.assertTrue(self.c.participates())
+
+    def test_recovered_car_can_become_ready(self):
+        self.c.loc.on_track = False
+        self.assertFalse(self.g.grid_tick(0))
+        self.c.loc.on_track = True
+        self.c.loc.frac, self.c.loc.sub_id = .52, 33
+        self.g.grid_tick(0)
+        self.assertEqual(self.c.grid_state, 'placed')
+        self.assertTrue(self.g.grid_tick(0))
+
+    def test_only_parked_car_is_excluded(self):
+        self.c.ai = False
+        self.assertTrue(self.g.grid_tick(0))
+        self.assertEqual(self.c.grid_state, '')
+
+    def test_unavailable_participant_blocks_countdown(self):
+        self.c.car.connected = False
+        self.assertFalse(self.g.grid_tick(0))
+        self.assertEqual(self.c.grid_state, 'waiting for connection')
+        self.c.car.connected = True
+        self.c.car.on_charger = True
+        self.assertFalse(self.g.grid_tick(0))
+        self.assertEqual(self.c.grid_state, 'waiting for charger removal')
 
     def test_wrong_lane_also_requires_full_retry(self):
         self.c.loc.lane_mm = -68

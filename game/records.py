@@ -12,6 +12,7 @@ class Records:
     def __init__(self, path=None):
         self.path = Path(path) if path else None
         self.entries = {}
+        self.maps = {}
         self.error = ""
         if self.path and self.path.exists():
             try:
@@ -24,6 +25,7 @@ class Records:
                     if not isinstance(entry.get("seconds"), (int, float)) or not math.isfinite(entry["seconds"]) or entry["seconds"] <= 0:
                         raise ValueError("invalid time")
                 self.entries = data["entries"]
+                self.maps = data.get("maps", {}) if isinstance(data.get("maps", {}), dict) else {}
             except (OSError, ValueError, TypeError, AttributeError) as exc:
                 self.error = "Records could not be loaded; original file preserved"
                 log.warning("%s: %s", self.error, exc)
@@ -43,6 +45,9 @@ class Records:
     def record(self, track, mode, car, kind, seconds, laps=0):
         if not track or not math.isfinite(seconds) or seconds <= 0:
             return
+        geometry = json.loads(track.to_json())
+        geometry_changed = self.maps.get(self.map_key(track)) != geometry
+        self.maps[self.map_key(track)] = geometry
         driver = "human" if car.source is not None else "ai"
         vehicle = getattr(car, "car", None)
         car_id = str(getattr(vehicle, "address", None) or car.name)
@@ -57,7 +62,7 @@ class Records:
         if source is not None:
             scopes += [("human-controller", "controller", controller_id),
                        ("human-pair", "pair", car_id + "|" + controller_id)]
-        changed = False
+        changed = geometry_changed
         for category, scope, identity in scopes:
             group = category if scope == "overall" else category + "-" + hashlib.sha256(identity.encode()).hexdigest()[:16]
             key = self.key(track, mode, group, kind, laps)
@@ -68,11 +73,19 @@ class Records:
             changed = True
         if not changed:
             return
+        self.save()
+
+    def remember_track(self, track):
+        if track:
+            self.maps[self.map_key(track)] = json.loads(track.to_json())
+            self.save()
+
+    def save(self):
         if self.path and not self.error:
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 temporary = self.path.with_suffix(".tmp")
-                temporary.write_text(json.dumps({"version": 1, "entries": self.entries}, indent=2), encoding="utf-8")
+                temporary.write_text(json.dumps({"version": 1, "entries": self.entries, "maps": self.maps}, indent=2), encoding="utf-8")
                 temporary.replace(self.path)
             except OSError as exc:
                 self.error = "Records could not be saved"
@@ -96,3 +109,18 @@ class Records:
             row[kind] = entry
         return sorted(rows.values(), key=lambda r: (r["lap"]["seconds"] if r["lap"] else float("inf"),
                                                    r["race"]["seconds"] if r["race"] else float("inf"), r["label"]))
+
+    def archive(self):
+        """All saved boards, including disconnected drivers and legacy overall records."""
+        boards = {}
+        for key, entry in self.entries.items():
+            parts = key.split(":")
+            if len(parts) != 5:
+                continue
+            map_id, mode, category, kind, laps = parts
+            scope = entry.get("scope", "overall")
+            driver = entry.get("driver_type", "human" if category.startswith("human") else "ai")
+            group = (map_id, mode, scope, driver, kind, laps)
+            boards.setdefault(group, []).append(dict(entry))
+        return [(group, sorted(rows, key=lambda row: (row["seconds"], row["car"])))
+                for group, rows in sorted(boards.items())]

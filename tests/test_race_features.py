@@ -30,6 +30,123 @@ class PredictionTests(unittest.TestCase):
         self.game.mode = 'race'
         self.now = time.monotonic()
 
+    def test_race_ceiling_caps_commands_and_preserves_personal_limit(self):
+        self.car.source = Mock()
+        self.car.car.set_speed = Mock()
+        self.game.set_race_speed_limit(600)
+        self.car.command_speed(1800, self.now)
+        self.assertEqual(self.car.speed_sent(), 600)
+        self.assertEqual(self.car.max_speed, 600)
+        self.assertEqual(self.car.player_max_speed, 2000)
+        self.game.set_race_speed_limit(2000)
+        self.assertEqual(self.car.max_speed, 2000)
+
+    def test_fair_penalties_follow_ranking_and_clear_outside_race(self):
+        cars = [self.car] + [CarState(SimpleNamespace(model=str(i), battery_mv=0, connected=True,
+                            on_charger=False), i, Mock(), 800) for i in (1, 2)]
+        self.game.cars = cars
+        for car in cars:
+            car.ai = True
+            car.localized = Mock(return_value=True)
+        self.game.running = self.game.fair_game = True
+        self.game.ranking = Mock(return_value=cars)
+        self.game.update_fair_penalties()
+        self.assertEqual([c.fair_penalty for c in cars], [20, 10, 0])
+        self.game.ranking.return_value = list(reversed(cars))
+        self.game.update_fair_penalties()
+        self.assertEqual([c.fair_penalty for c in cars], [0, 10, 20])
+        cars[1].ai = False
+        self.game.update_fair_penalties()
+        self.assertEqual(cars[1].fair_penalty, 0)
+        self.game.running = False
+        self.game.update_fair_penalties()
+        self.assertEqual([c.fair_penalty for c in cars], [0, 0, 0])
+        self.assertEqual(self.game.records_mode, 'race_fair')
+        self.game.fair_game = False
+        self.assertEqual(self.game.records_mode, 'race')
+
+    def test_fair_penalty_applies_after_ceiling_and_never_prevents_stop(self):
+        self.car.car.set_speed = Mock()
+        self.car.fair_penalty = 20
+        self.car.race_speed_limit = 600
+        self.car.command_speed(1000, self.now)
+        self.assertEqual(self.car.speed_sent(), 580)
+        self.car.command_speed(0, self.now + 1)
+        self.assertEqual(self.car.speed_sent(), 0)
+
+    def test_finish_lights_clear_effects_and_only_restore_winner(self):
+        self.car._send = Mock()
+        self.car.lights_idle = Mock()
+        self.car.lights_restore_at = self.now + 100
+        self.car.lights_finish(False)
+        self.assertEqual(self.car.lights_restore_at, 0)
+        self.car.lights_idle.assert_not_called()
+        self.car._send.assert_any_call(P.lights_off(15))
+        self.car.lights_finish(True)
+        self.car.lights_idle.assert_called_once()
+
+    def test_low_battery_blinks_player_color_and_does_not_repeat_commands(self):
+        self.car._send = Mock()
+        self.car.battery.update(3600, 0)
+        self.car.update_battery_light()
+        expected = P.lights_pattern([(channel, P.EFFECT_FLASH, 0, value, 0)
+                    for channel, value in zip((P.LC_RED, P.LC_GREEN, P.LC_BLUE), self.car.engine_rgb)])
+        self.car._send.assert_called_once_with(expected)
+        self.car.update_battery_light()
+        self.car._send.assert_called_once()
+        self.car.battery.update(4000, 0)
+        self.car.update_battery_light()
+        self.car._send.assert_called_with(P.engine_color(*self.car.engine_rgb))
+
+    def test_battery_update_does_not_override_effects_or_relight_loser(self):
+        self.car._send = Mock()
+        self.car.lights_flash(self.now)
+        self.car._send.reset_mock()
+        self.car.on_message(P.MSG_BATTERY_LEVEL_RESPONSE, {'battery_mv': 3500})
+        self.car._send.assert_not_called()
+        self.car.lights_idle()
+        self.car.lights_finish(False)
+        self.car._send.reset_mock()
+        self.car.on_message(P.MSG_BATTERY_LEVEL_RESPONSE, {'battery_mv': 3600})
+        self.car._send.assert_not_called()
+
+    def test_finished_tick_sets_lights_once(self):
+        self.car._send = Mock()
+        self.game.running = True
+        self.game.winner = self.car
+        self.game.finish_t = self.now
+        self.car.command_speed = Mock()
+        self.car.lights_finish = Mock()
+        self.game._track_laps = Mock()
+        self.game.tick(0)
+        self.game.tick(0)
+        self.car.lights_finish.assert_called_once_with(True)
+
+    def test_winner_blinks_for_twelve_seconds_and_loser_rumbles_once(self):
+        loser = CarState(SimpleNamespace(model='Loser', battery_mv=0, connected=True, on_charger=False), 1, Mock(), 800)
+        loser.source = Mock()
+        loser.command_speed = Mock()
+        loser.lights_finish = Mock()
+        self.game.cars.append(loser)
+        self.game.running = True
+        self.game.winner = self.car
+        self.game._track_laps = Mock()
+        self.car.command_speed = Mock()
+        self.car.lights_finish = Mock()
+        self.car.lights_idle = Mock()
+        self.car._send = Mock()
+        for step in range(24):
+            with patch('game.game.time.monotonic', return_value=100 + step * .5):
+                self.game.tick(0)
+            rgb = self.car.engine_rgb if step % 2 == 0 else (0, 0, 0)
+            self.car._send.assert_called_with(P.engine_color(*rgb))
+        self.assertEqual(self.car._send.call_count, 24)
+        loser.source.rumble.assert_called_once_with(.7, .4, 1200)
+        loser.lights_finish.assert_called_once_with(False)
+        with patch('game.game.time.monotonic', return_value=112):
+            self.game.tick(0)
+        self.car.lights_idle.assert_called_once()
+
     def fix(self, index, frac, now, speed=2000):
         piece = self.track.pieces[index]
         pid = 33 if piece.kind == START and frac >= .5 else piece.id
@@ -448,6 +565,7 @@ class ControllerTests(unittest.TestCase):
         self.app = App.__new__(App)
         self.pad = Mock(spec=I.InputSource)
         self.pad.alive.return_value = True
+        self.pad.brake.return_value = 0.0
         self.pad.short, self.pad.name = 'P1', 'Pad'
         self.app.pads = [self.pad]
         self.app.keyboard = Mock(spec=I.InputSource)
@@ -476,6 +594,31 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.app.state, GRID)
         self.assertIs(self.app.cars[0].source, self.pad)
         self.app.game.begin_grid.assert_called_once()
+
+    def test_scores_controller_shortcut_and_back(self):
+        self.app.game.stop_all = Mock()
+        self.pad.brake.return_value = 1.0
+        self.press(I.TOGGLE_MODE)
+        with patch('game.score_page.LiveScores') as server, patch('webbrowser.open') as browser:
+            self.app.pairing_tick()
+        browser.assert_called_once()
+        self.assertEqual(self.app.state, PAIRING)
+        self.app.game.stop_all.assert_not_called()
+        server.assert_called_once()
+
+    def test_archive_preserves_all_boards_and_sorts_times(self):
+        records = Records()
+        records.entries = {
+            'map1:race:human:lap:0': {'car': 'Old', 'seconds': 9},
+            'map2:race_fair:human-car-a:race:5': {'car': 'A', 'seconds': 40, 'scope': 'car', 'driver_type': 'human'},
+            'map2:race_fair:human-car-b:race:5': {'car': 'B', 'seconds': 35, 'scope': 'car', 'driver_type': 'human'},
+            'map2:race_fair:human-pair-a:race:10': {'car': 'A', 'seconds': 90, 'scope': 'pair', 'driver_type': 'human'},
+        }
+        boards = records.archive()
+        self.assertEqual(len(boards), 3)
+        self.assertEqual(sum(len(rows) for _, rows in boards), 4)
+        self.assertEqual(boards[0][0][2], 'overall')
+        self.assertEqual([row['car'] for _, rows in boards for row in rows if row['seconds'] in (35, 40)], ['B', 'A'])
 
     def test_recovery_button_routes_request_to_player(self):
         self.app.game.retry_recovery = Mock()

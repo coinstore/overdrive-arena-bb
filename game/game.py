@@ -55,7 +55,8 @@ MINE_ARM_S = 1.0
 DEATH_STOP_S = 3.0
 GRID_SPEED = 320            # speed used to drive to the start line
 GRID_CRAWL = 200            # final approach speed: slow and identical for every car so they stop aligned
-GRID_TIMEOUT_S = 12.0       # a car that reads no codes for this long is not on the track
+GRID_RECOVERY_DRIVE_S = 1.5  # bounded slow search, followed by a pause before retrying
+GRID_RECOVERY_PAUSE_S = 2.0
 GRID_STOP_FRAC = 0.24       # stop once this far into the start piece (before the finish line at 0.5)
 COUNTDOWN_S = 3.0
 BOOST_DURATION_S = 0.6
@@ -111,6 +112,8 @@ class CarState:
         self.ble = ble
         self._ai_max_speed = max_speed
         self.player_max_speed = 2000
+        self.race_speed_limit = 2000
+        self.fair_penalty = 0
         self.source: Optional[I.InputSource] = None
         self.ai = False
         self.ai_pref = True                 # pairing screen: unclaimed car -> AI (True) or parked (False)
@@ -127,6 +130,7 @@ class CarState:
         self.grid_state = ""              # '', 'driving', 'placed', 'off track', 'u-turn'
         self.grid_lane = 0.0
         self.grid_t0 = 0.0
+        self.grid_recovery_t: Optional[float] = None
         self.grid_uturn_t = 0.0
         self.grid_laps = 0
         self.grid_retry_lap = False
@@ -183,6 +187,8 @@ class CarState:
         self.boost_until = 0.0
         self.boost_ready_at = 0.0
         self.lights_restore_at = 0.0
+        self._finish_dark = False
+        self._battery_light_state = None
 
         self._last_speed_sent = 0
         self._last_speed_t = 0.0
@@ -197,10 +203,10 @@ class CarState:
     @property
     def max_speed(self) -> int:
         if self.source is not None:
-            return self.player_max_speed
+            return min(self.player_max_speed, self.race_speed_limit)
         if self.ai_difficulty == "extreme" and self.extreme_max_speed is not None:
-            return int(self.extreme_max_speed)
-        return self._ai_max_speed
+            return min(int(self.extreme_max_speed), self.race_speed_limit)
+        return min(self._ai_max_speed, self.race_speed_limit)
 
     @max_speed.setter
     def max_speed(self, value: int) -> None:
@@ -261,8 +267,10 @@ class CarState:
             self._last_offtrack_t = received_at
         if msg_id == P.MSG_BATTERY_LEVEL_RESPONSE and isinstance(decoded, dict):
             self.battery.update(int(decoded["battery_mv"]), self._last_speed_sent, charging=bool(self.car.on_charger))
+            self.update_battery_light()
         elif msg_id == P.MSG_STATUS_UPDATE and isinstance(decoded, P.VehicleStatus):
             self.battery.charging = decoded.on_charger
+            self.update_battery_light()
             if decoded.on_charger and self.loc is not None:
                 self.loc.on_track = False
         elif msg_id == P.MSG_SPEED_UPDATE and isinstance(decoded, P.SpeedUpdate) and self.loc is not None:
@@ -273,7 +281,7 @@ class CarState:
             if msg_id == P.MSG_LOCALIZATION_POSITION_UPDATE and self.loc.direction < 0:
                 self._reverse_reports += 1
         if self.extra_listener is not None:
-            self.extra_listener(msg_id, decoded)
+            self.extra_listener(msg_id, decoded, received_at=received_at)
 
     def set_track(self, track: Optional[Track]) -> None:
         self.loc = CarLocalizer(track) if track else None
@@ -329,7 +337,8 @@ class CarState:
             speed = 0
         else:
             speed = int(round(desired * factor))
-        speed = max(0, min(2000, speed))
+        speed = max(0, min(2000, self.race_speed_limit, speed))
+        speed = max(0, speed - self.fair_penalty)
         accel = ACCEL_STOP if speed == 0 else (ACCEL_DOWN if speed < self._last_speed_sent else ACCEL_UP)
         changed = abs(speed - self._last_speed_sent) >= SPEED_SEND_MIN_DELTA
         zeroing = speed == 0 and self._last_speed_sent != 0
@@ -416,9 +425,25 @@ class CarState:
 
     # ---- lights ----
     def lights_idle(self) -> None:
-        r, g, b = self.engine_rgb
-        self._send(P.engine_color(r, g, b))
-        self._send(P.lights_on(P.LIGHT_HEADLIGHTS))
+        self._finish_dark = False
+        self.lights_restore_at = 0.0
+        self.update_battery_light(force=True)
+        self._send(P.lights_on(P.LIGHT_HEADLIGHTS | P.LIGHT_ENGINE))
+
+    def update_battery_light(self, force: bool = False) -> None:
+        """Keep player color; blink only for low or critical charge."""
+        if self._finish_dark or self.lights_restore_at:
+            return
+        warning = self.battery.status in ("low", "critical")
+        state = (self.engine_rgb, warning)
+        if not force and state == self._battery_light_state:
+            return
+        self._battery_light_state = state
+        if warning:
+            self._send(P.lights_pattern([(channel, P.EFFECT_FLASH, 0, value, 0)
+                       for channel, value in zip((P.LC_RED, P.LC_GREEN, P.LC_BLUE), self.engine_rgb)]))
+        else:
+            self._send(P.engine_color(*self.engine_rgb))
 
     def lights_flash(self, now: float, seconds: float = 1.0) -> None:
         self._send(P.lights_pattern([(P.LC_TAIL, P.EFFECT_FLASH, 0, 14, 10), (P.LC_RED, P.EFFECT_FLASH, 0, 14, 10),
@@ -427,6 +452,15 @@ class CarState:
 
     def lights_identify(self, on: bool) -> None:
         self._send(P.lights_on(P.LIGHT_HEADLIGHTS | P.LIGHT_FRONTLIGHTS) if on else P.lights_off(P.LIGHT_HEADLIGHTS | P.LIGHT_FRONTLIGHTS))
+
+    def lights_finish(self, winner: bool) -> None:
+        self.lights_restore_at = 0.0
+        self._finish_dark = not winner
+        self._battery_light_state = None
+        self._send(P.lights_pattern([(channel, P.EFFECT_STEADY, 0, 0, 0) for channel in range(6)]))
+        self._send(P.lights_off(P.LIGHT_HEADLIGHTS | P.LIGHT_BRAKELIGHTS | P.LIGHT_FRONTLIGHTS | P.LIGHT_ENGINE))
+        if winner:
+            self.lights_idle()
 
     def world(self) -> Optional[tuple[float, float]]:
         return self.loc.world() if self.loc else None
@@ -449,7 +483,12 @@ class Game:
         self._countdown_pulse = None
         self.mode = "battle"                # battle (weapons, kills) | race (laps only, no weapons)
         self.lap_target = 5
+        self.fair_game = False
         self.winner: Optional[CarState] = None
+        self._finish_lights_winner = None
+        self.finish_celebration_t = 0.0
+        self._finish_blink = None
+        self.race_speed_limit = 2000
         self.finish_t = 0.0
         self.running = False
         self.records = Records()
@@ -457,6 +496,27 @@ class Game:
             c.set_track(track)
 
     # ---- lifecycle ----
+    @property
+    def records_mode(self) -> str:
+        return "race_fair" if self.mode == "race" and self.fair_game else self.mode
+
+    def update_fair_penalties(self) -> None:
+        for car in self.cars:
+            car.fair_penalty = 0
+        if not (self.fair_game and self.mode == "race" and self.running and not self.finished):
+            return
+        racers = [car for car in self.ranking() if car.participates() and car.car.connected and not car.charging]
+        if len(racers) < 2:
+            return
+        for rank, car in enumerate(racers):
+            if car.localized() and not car.ai_track_recovery:
+                car.fair_penalty = max(0, 20 - rank * 10)
+
+    def set_race_speed_limit(self, speed: int) -> None:
+        self.race_speed_limit = max(200, min(2000, int(speed)))
+        for car in self.cars:
+            car.race_speed_limit = self.race_speed_limit
+
     def set_track(self, track: Optional[Track]) -> None:
         self.track = track
         for c in self.cars:
@@ -478,33 +538,34 @@ class Game:
         self.assign_roles()
         self.phase = "grid"
         self.running = False
+        self.update_fair_penalties()
         lane_i = 0
         for c in self.cars:
             c.lights_idle()
-            if not c.participates() or not c.car.connected or self.track is None:
+            if not c.participates() or self.track is None:
                 c.grid_state = ""
                 c.hard_stop(now)
-                continue
-            if c.charging:
-                c.grid_state = "charging"
-                c.hard_stop(now)
-                self.log(f"{c.name} is on its charger - left out of the race", WARN_COLOR)
                 continue
             c.grid_lane = LANES[lane_i % len(LANES)]
             lane_i += 1
             c.grid_state = "driving"
             c.grid_t0 = now
+            c.grid_recovery_t = None
+            c.penalty_until = c.dead_until = c.stun_until = 0.0
             c.grid_uturn_t = 0.0
             c.grid_laps = 0
             c.grid_retry_lap = False
             c.grid_prev_index = None
             c.set_lane(c.grid_lane, now)
             c._last_lane_sent = 999.0     # force a lane command once the car is localized
-            c.command_speed(GRID_SPEED, now)
+            if c.car.connected and not c.charging:
+                c.command_speed(GRID_SPEED, now)
+            else:
+                c.hard_stop(now)
         self.log("forming the grid: cars drive to the start line")
 
     def grid_tick(self, dt: float) -> bool:
-        """Advance the grid phase. Returns True when every participant is placed or given up on."""
+        """Wait for every participant; only explicitly parked cars are excluded."""
         now = time.monotonic()
         for c in self.cars:
             if c.loc:
@@ -512,28 +573,33 @@ class Game:
         done = True
         for c in self.cars:
             st = c.grid_state
-            if st in ("", "placed", "off track", "charging", "missed start"):
-                if st == "placed":
+            if not c.participates():
+                c.grid_state = ""
+                c.command_speed(0, now)
+                continue
+            if not c.car.connected or c.charging:
+                c.grid_state = "waiting for connection" if not c.car.connected else "waiting for charger removal"
+                if c.car.connected:
                     c.command_speed(0, now)
+                done = False
+                continue
+            if st == "placed":
+                c.command_speed(0, now)
                 continue
             done = False
-            grid_limit = max(40.0, 3 * sum(p.length_mm for p in self.track.pieces) / GRID_CRAWL + 10) if self.track else 40.0
-            if now - c.grid_t0 > grid_limit:
-                c.grid_state = "missed start"
-                c.hard_stop(now)
-                self.log(f"{c.name}: start-line attempts timed out; left out", WARN_COLOR)
-                continue
-            if not c.car.connected:
-                c.grid_state = "off track"
-                continue
             if not c.localized():
-                if now - c.grid_t0 > GRID_TIMEOUT_S:
-                    c.grid_state = "off track"
-                    c.hard_stop(now)
-                    self.log(f"{c.name} is not on the track - left out of the race", WARN_COLOR)
-                else:
-                    c.command_speed(GRID_SPEED, now)
+                if c.grid_recovery_t is None:
+                    c.grid_recovery_t = now
+                    self.log(f"{c.name}: recovering track position; retrying until ready", c.color)
+                cycle = (now - c.grid_recovery_t) % (GRID_RECOVERY_DRIVE_S + GRID_RECOVERY_PAUSE_S)
+                searching = cycle < GRID_RECOVERY_DRIVE_S
+                c.grid_state = "recovering" if searching else "recovery pause"
+                c.command_speed(min(250, c.max_speed) if searching else 0, now)
                 continue
+            if c.grid_recovery_t is not None:
+                c.grid_recovery_t = None
+                c.grid_prev_index = None
+                c._last_lane_sent = 999.0
             loc = c.loc
             assert loc is not None
             previous_index = c.grid_prev_index
@@ -577,16 +643,11 @@ class Game:
                 self.log(f"{c.name} on the start line (lane {lane_now:+.0f})", c.color)
             elif on_bar or overshot:
                 c.grid_laps += 1
-                if c.grid_laps >= 3:
-                    c.hard_stop(now)
-                    c.grid_state = "missed start"
-                    self.log(f"{c.name}: missed the start after 3 attempts; left out", WARN_COLOR)
-                else:
-                    c.grid_retry_lap = True
-                    c.grid_state = "retry lap"
-                    c._last_lane_sent = 999.0
-                    c.command_speed(GRID_SPEED, now)
-                    self.log(f"{c.name}: {'overshot' if overshot else 'wrong lane'}; another lap to retry the start", c.color)
+                c.grid_retry_lap = True
+                c.grid_state = "retry lap"
+                c._last_lane_sent = 999.0
+                c.command_speed(GRID_SPEED, now)
+                self.log(f"{c.name}: {'overshot' if overshot else 'wrong lane'}; another lap to retry the start", c.color)
         return done
 
     def grid_summary(self) -> tuple[int, int]:
@@ -633,6 +694,9 @@ class Game:
         self.phase = "race"
         self.race_start_t = now
         self.winner = None
+        self._finish_lights_winner = None
+        self.finish_celebration_t = 0.0
+        self._finish_blink = None
         self.finish_t = 0.0
         self.mines.clear()
         self.lasers.clear()
@@ -802,7 +866,7 @@ class Game:
                 if lap > 0:
                     c.laps += 1
                     c.last_lap_s = lap
-                    self.records.record(self.track, self.mode, c, "lap", lap)
+                    self.records.record(self.track, self.records_mode, c, "lap", lap)
                     if c.best_lap_s is None or lap < c.best_lap_s:
                         c.best_lap_s = lap
                         self.log(f"{c.name} lap {c.laps}: {lap:.2f}s (best)", c.color)
@@ -810,7 +874,7 @@ class Game:
                         self.log(f"{c.name} lap {c.laps}: {lap:.2f}s", c.color)
                     if self.mode == "race" and c.laps >= self.lap_target and c.race_finish_s is None and self.race_start_t is not None:
                         c.race_finish_s = crossing_t - self.race_start_t
-                        self.records.record(self.track, self.mode, c, "race", c.race_finish_s, self.lap_target)
+                        self.records.record(self.track, self.records_mode, c, "race", c.race_finish_s, self.lap_target)
                     if self.mode == "race" and c.laps >= self.lap_target and (self.winner is None or crossing_t < self.finish_t):
                         self.winner = c
                         self.finish_t = crossing_t
@@ -831,6 +895,7 @@ class Game:
             if c.loc:
                 c.loc.advance(dt, now)
         self.fx = [e for e in self.fx if now - e.t0 < e.duration]
+        self.update_fair_penalties()
         if not self.running:
             return
         if self.finished:
@@ -841,6 +906,26 @@ class Game:
                     c.command_speed(0, now)
                 else:
                     c.command_speed(min(c.speed_sent(), 300), now) if c is not self.winner else c.command_speed(0, now)
+            if self._finish_lights_winner is not self.winner:
+                for c in self.cars:
+                    c.lights_finish(c is self.winner)
+                    if c is not self.winner and c.participates() and c.source is not None and c.source.alive():
+                        c.source.rumble(0.7, 0.4, 1200)
+                self._finish_lights_winner = self.winner
+                self.finish_celebration_t = now
+                self._finish_blink = None
+            # Twelve slow, full-color blinks over twelve seconds. Drive the
+            # timing here instead of depending on firmware effect timing.
+            elapsed = now - self.finish_celebration_t
+            blink = int(elapsed / 0.5) if elapsed < 12.0 else 24
+            if blink != self._finish_blink:
+                self._finish_blink = blink
+                if blink == 24:
+                    self.winner.lights_idle()
+                else:
+                    self.winner.lights_restore_at = now + 1.0
+                    rgb = self.winner.engine_rgb if blink % 2 == 0 else (0, 0, 0)
+                    self.winner._send(P.engine_color(*rgb))
             return
         for c in self.cars:
             self._track_laps(c, now)

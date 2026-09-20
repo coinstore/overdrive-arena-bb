@@ -54,6 +54,7 @@ class TelemetryTests(unittest.TestCase):
         car = CarState(vehicle, 0, Mock(), 800)
         car.set_track(self.track)
         car.battery = Mock()
+        car._send = Mock()
         return car
 
     def test_callback_defers_battery_io_to_drain(self):

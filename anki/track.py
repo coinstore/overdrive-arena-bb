@@ -238,11 +238,64 @@ def build_track(raw: list[dict]) -> Track:
 
 
 # ---------------------------------------------------------------- scanner
+class ScanEvidence:
+    """Shared, start-aligned observations; never guess a conflicting piece."""
+
+    def __init__(self):
+        self.attempts = []
+        self.turn_votes = Counter()
+        self.scanners = []
+        self.contributors = set()
+
+    @staticmethod
+    def normalized(raw):
+        rows = [dict(row) for row in raw]
+        if rows and rows[0]["reversed"]:
+            rows = rows[:1] + list(reversed(rows[1:]))
+            for row in rows:
+                row["reversed"] = not row["reversed"]
+                row["turn"] = {"L": "R", "R": "L"}.get(row["turn"])
+        return rows
+
+    @staticmethod
+    def compatible(a, b):
+        if a["turn"] and b["turn"] and a["turn"] != b["turn"]:
+            return False
+        return (a["id"] is None or b["id"] is None or
+                (a["id"] == b["id"] and a["reversed"] == b["reversed"] and
+                 (not a["turn"] or not b["turn"] or a["turn"] == b["turn"])))
+
+    def preview(self):
+        # A reverse partial lap has not yet reached the same sequence origin;
+        # only completed reverse laps can be normalized safely.
+        drafts = self.attempts + [[dict(row) for row in sc.lap] for sc in self.scanners
+                                  if sc.lap and not sc.lap[0]["reversed"]]
+        if not drafts:
+            return []
+        best = [dict(row) for row in max(drafts, key=lambda rows: (len(rows), sum(r["id"] is not None for r in rows)))]
+        for draft in drafts:
+            if all(self.compatible(a, b) for a, b in zip(best, draft)):
+                for index, row in enumerate(draft[:len(best)]):
+                    if best[index]["id"] is None and row["id"] is not None:
+                        best[index] = dict(row)
+                    elif best[index]["turn"] is None and row["turn"]:
+                        best[index]["turn"] = row["turn"]
+        for row in best:
+            if row["id"] is not None and piece_type(row["id"]) == TURN and not row["turn"]:
+                votes = [(count, turn) for (rev, turn), count in self.turn_votes.items() if rev == row["reversed"]]
+                if votes:
+                    row["turn"] = max(votes)[1]
+        return best
+
+
 class TrackScanner:
     """Feed it one car's parsed messages; it records piece ids between transition bars and,
     once it has driven from the start piece back to the start piece, builds a Track."""
 
-    def __init__(self):
+    def __init__(self, evidence: Optional[ScanEvidence] = None, name: str = "car"):
+        self.evidence = evidence if evidence is not None else ScanEvidence()
+        self.evidence.scanners.append(self)
+        self.name = name
         self.lock = threading.Lock()
         self.state = "waiting for start piece"
         self.current: list[tuple[int, bool]] = []      # (piece id, reverse flag) seen since last transition
@@ -252,59 +305,116 @@ class TrackScanner:
         self.recording = False
         self.pieces_seen = 0
         self.last_msg_t = 0.0
+        self.last_position_t = 0.0
+        self.stopped = False
+        self.inferred_boundaries = 0
+        self.last_retry = ""
+        self._last_fraction = None
+        self._start_half_pending = False
+        self._attempts = self.evidence.attempts
         # calibration: does "reverse parsing" on a turn mean right or left? learned from wheel data
-        self._rev_turn: Counter = Counter()
+        self._rev_turn = self.evidence.turn_votes
 
-    def on_message(self, msg_id: int, decoded) -> None:
+    def on_message(self, msg_id: int, decoded, received_at: Optional[float] = None) -> None:
         with self.lock:
-            self.last_msg_t = time.monotonic()
+            if self.done or self.stopped:
+                return
+            now = time.monotonic() if received_at is None else received_at
             if msg_id == P.MSG_LOCALIZATION_POSITION_UPDATE and isinstance(decoded, P.PositionUpdate):
+                self.last_msg_t = self.last_position_t = now
+                located = locate(decoded.piece, decoded.location, decoded.reverse_parsing)
+                fraction = ((1 - located[1]) if decoded.reverse_parsing else located[1]) if located else None
+                changed = self.current and self.current[-1] != (decoded.piece, decoded.reverse_parsing)
+                wrapped = (self.current and fraction is not None and self._last_fraction is not None
+                           and self._last_fraction > .65 and fraction < .35)
+                if changed or wrapped:
+                    # Losing a transition must not collapse two pieces into a
+                    # majority vote. Direction can be filled from later wheel data.
+                    self._close_piece(None)
+                    self.inferred_boundaries += 1
+                if self.done:
+                    return
                 self.current.append((decoded.piece, decoded.reverse_parsing))
+                self._last_fraction = fraction
                 self.pieces_seen += 1
             elif msg_id == P.MSG_LOCALIZATION_TRANSITION_UPDATE and isinstance(decoded, P.TransitionUpdate):
+                self.last_msg_t = now
                 self._close_piece(decoded)
             elif msg_id == P.MSG_VEHICLE_DELOCALIZED:
-                self.state = "car left the track - restarting"
-                self.current.clear()
-                self.lap.clear()
-                self.recording = False
+                self.state = "left track - stopped; replace car and scan again"
+                self.stopped = True
 
-    def _close_piece(self, tr: P.TransitionUpdate) -> None:
+    def _close_piece(self, tr: Optional[P.TransitionUpdate]) -> None:
+        self._last_fraction = None
         if not self.current:
-            if self.recording:
-                self.lap.append({"id": None, "turn": tr.turn, "reversed": False})
+            if self.recording and tr and tr.left_wheel_cm + tr.right_wheel_cm >= 10:
+                if self._start_half_pending:
+                    self._start_half_pending = False
+                else:
+                    self.lap.append({"id": None, "turn": tr.turn, "reversed": False})
             return
-        pid = Counter(p for p, _ in self.current).most_common(1)[0][0]
-        rev = Counter(r for _, r in self.current).most_common(1)[0][0]
+        pid, rev = Counter(self.current).most_common(1)[0][0]
         self.current.clear()
         kind = piece_type(pid)
-        turn = tr.turn if kind == TURN else None
+        turn = tr.turn if tr and kind == TURN else None
         if kind == TURN and turn:
             self._rev_turn[(rev, turn)] += 1
-        if kind == TURN and turn is None:  # wheels inconclusive: fall back to the learned flag mapping
-            for (r, t), _n in self._rev_turn.most_common():
-                if r == rev:
-                    turn = t
-                    break
         entry = {"id": pid, "turn": turn, "reversed": rev}
-
-        if pid == START_ID:
+        if pid in (START_ID, FINISH_ID):
+            # Both optical halves identify the same physical start piece. Either
+            # can anchor a scan; receiving the other half is not another lap.
+            if pid == FINISH_ID and self.lap and self.lap[-1]["id"] is None and self.lap[-1]["turn"] is None:
+                self.lap.pop()  # missing 34 codes, but its half-bar was received
+            self._start_half_pending = pid == START_ID
+            if self.lap and self.lap[-1]["id"] == START_ID:
+                return
             if self.recording and len(self.lap) >= 3:
                 self.laps_tried += 1
-                track = build_track(self.lap)
-                if track.closed:
-                    self.track = track
-                    self.state = f"done: {len(track)} pieces"
-                    self.recording = False
+                self._finish_lap()
+                if self.done:
                     return
-                self.state = f"lap {self.laps_tried} did not close ({track.describe()}), retrying"
-            self.lap = [entry]
+            self.lap = [{"id": START_ID, "turn": None, "reversed": rev}]
             self.recording = True
-            self.state = "recording lap"
-            return
-        if self.recording:
+        elif self.recording:
+            self._start_half_pending = False
             self.lap.append(entry)
+        if self.recording:
             self.state = f"recording lap: {len(self.lap)} pieces"
+
+    def _finish_lap(self) -> None:
+        candidate = self.evidence.normalized(self.lap)
+        self.evidence.contributors.add(self.name)
+        # Combine complementary missing codes only when every known position
+        # agrees on lap length, identity, orientation and turn direction.
+        donors = [rows for rows in self._attempts if len(rows) == len(candidate)]
+        # A car still partway around can already fill a gap in a completed lap.
+        # Reverse partial scans need their closing anchor before alignment.
+        donors += [sc.lap for sc in self.evidence.scanners if sc is not self and sc.lap
+                   and not sc.lap[0]["reversed"] and len(sc.lap) <= len(candidate)]
+        for previous in donors:
+            compatible = all(self.evidence.compatible(a, b) for a, b in zip(candidate, previous))
+            if compatible:
+                for index, (a, b) in enumerate(zip(candidate, previous)):
+                    if a["id"] is None and b["id"] is not None:
+                        candidate[index] = dict(b)
+                    elif a["turn"] is None and b["turn"]:
+                        a["turn"] = b["turn"]
+        for entry in candidate:
+            if entry["id"] is not None and piece_type(entry["id"]) == TURN and not entry["turn"]:
+                votes = [(count, turn) for (rev, turn), count in self._rev_turn.items() if rev == entry["reversed"]]
+                if votes:
+                    entry["turn"] = max(votes)[1]
+        self._attempts.append(candidate)
+        del self._attempts[:-12]
+        complete = all(e["id"] is not None and piece_type(e["id"]) != UNKNOWN and
+                       (piece_type(e["id"]) != TURN or e["turn"] is not None) for e in candidate)
+        track = build_track(candidate)
+        if complete and track.closed:
+            self.track = track
+            self.state = f"done: {len(track)} pieces"
+            self.recording = False
+        else:
+            self.last_retry = f"lap {self.laps_tried}: {'missing codes/turns' if not complete else 'loop did not close'}"
 
     @property
     def done(self) -> bool:

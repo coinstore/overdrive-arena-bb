@@ -21,8 +21,33 @@ cars directly, with the protocol verified on real hardware (firmware 11866) and 
 
 - **Controllers**: any gamepad SDL recognises (Xbox, DualSense, Switch Pro...) plus the keyboard, one per car.
   Pads can join or leave while the app runs.
-- **Track scanning**: the cars drive one lap and the loop is rebuilt from the track codes (piece ids, curve
-  direction from wheel travel, closure check). Saved as `track.json`.
+- **Starting grid**: every participating car keeps retrying until it is on the line. Lost position triggers
+  slow recovery bursts with pauses; missed starts, charging and link loss do not exclude a car.
+  Cars line up in separate lanes, then launch together on 3-2-1-GO. To leave a car out, return to
+  pairing with Back / Esc and set it to parked.
+- **Race speed**: click MAX or press right-stick / R in setup to cycle the shared ceiling from 200 to
+  2000 mm/s. It caps players, AI and boosts; individual lower limits still apply. At race finish only
+  the winning car remains illuminated until returning to setup.
+  The winner's RGB celebrates with 12 slow blinks over 12 seconds; losing players get a 1.2-second
+  controller vibration. Results remain visible for 14 seconds (Start / Options can begin a rematch sooner).
+- **Fair Game**: toggle FAIR in setup, press H, or hold LT and click the right stick. During a race,
+  first place loses 20 mm/s and second loses 10 mm/s from the commanded speed; later places lose none.
+  Penalties follow live positions, apply to players and AI, and are shown beside speed. Parked cars
+  are excluded, solo runs have no penalty, and Fair Game records are separate from normal races.
+- **High scores menu**: open HIGH SCORES from setup, press F2, or hold LT and click the left stick.
+  A local browser scorebook shows circuit shapes, best laps and race finishes, with filters for mode,
+  players/AI, cars, controllers and their pairs. Leave it on a second monitor: scores update automatically
+  every 1–2 seconds while the app runs, preserving your filters and selected track. A connection indicator
+  shows if the game closes, retaining the last displayed results. The server listens only on this PC.
+  New records save track geometry; older layouts are recovered for the current circuit or marked
+  unavailable until rescanned.
+- **Battery lights**: the engine RGB keeps the player's color and blinks when the battery monitor reports
+  low or critical charge. Countdown/damage effects take priority; losing cars stay dark after the finish.
+- **Cooperative track scanning**: cars share compatible lap observations and wheel measurements to fill
+  missing codes and turns. Code changes also recover missed transition messages. A live reconstruction
+  replaces the saved map while scanning, with unresolved gaps marked `?`. Scan speed cycles through
+  450, 500 and 400 mm/s on retries; cars losing track codes stop independently. Only a complete,
+  geometrically closed loop replaces `track.json`.
 - **Live map**: a circuit-constrained Kalman position estimate combines measured speed, lane radius and
   BLE position fixes. Prediction crosses piece boundaries and stops after one second without a fix.
 - **Map records**: best lap and fastest completed race saved in `records.json` and shown on the main
@@ -32,8 +57,6 @@ cars directly, with the protocol verified on real hardware (firmware 11866) and 
   player slot (P1/P2/P3), since identical pads do not expose a unique identity through pygame. Keep the
   same connection order for consistent slots. Existing overall records are retained; historical personal
   times that were never saved cannot be reconstructed. Long tables rotate pages every seven seconds.
-- **Starting grid**: every car drives itself to the start line in its own lane and stops on the finish-line
-  bar; 3-2-1-GO releases them together.
 - **Two modes**: BATTLE (blasters, mines, HP, kills) or RACE (laps only, first to N laps wins).
 - **AI drivers** with per-car Easy, Normal, Hard, and Extreme levels, including AI-only races. They brake before curves and accelerate on straights.
 - **Battery and charger tracking**: voltage, estimated %, sag under load (finds tired cells), CHARGING /
@@ -64,16 +87,22 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
    - Move the cursor: D-pad / left stick (keyboard: Left/Right). The car under a cursor blinks its headlights.
    - **A** (Enter): take the car you are hovering. Press again, or **B** (Backspace), to release it.
    - **X** (Tab): cycle an unclaimed car through Easy / Normal / Hard / Extreme / Parked (default: Normal).
-   - **SCAN TRACK** (Y / T / click): every connected car drives a lap; the first to close the loop provides the
-     map. Cars that read no track code within 8 s are flagged "NOT ON THE TRACK". Do this once per layout.
+   - **SCAN TRACK** (Y / T / click): cars combine compatible readings to reconstruct the circuit together.
+     Watch the new map grow during scanning. Cars with no codes for 8 s, or lost codes for 3.5 s, stop
+     independently; other cars continue. Only a complete closed loop replaces the saved map.
    - **BATTLE / RACE** (M / left-stick click / click) picks the mode; **D-pad up/down** or the **laps** button selects 3 / 5 / 10 / 20 laps.
+   - **MAX** (right-stick click / R / click): cycle the shared speed ceiling in 200 mm/s steps.
+   - **FAIR** (LT + right-stick click / H / click): enable position penalties of 20 mm/s for first and
+     10 mm/s for second. Other positions have no penalty.
+   - **HIGH SCORES** (LT + left-stick click / F2 / click): open the live browser scorebook. Move it to
+     your second monitor and keep racing; scores update automatically without reopening the page.
    - **RACE** (Start / Options / Space / click): enabled with at least one connected player or AI car off its charger. Leave all cars unclaimed for an AI-only race. The controllers legend and
      the "players / AI / parked" line tell you who drives what.
 3. **Starting grid**: each participant drives to the start line in its own lane (turning around first if it
    faces the wrong way), crawls the last half piece at 200 mm/s and stops on the finish-line bar. Cars that
-   overshoot the line or arrive in the wrong lane do a full lap before trying again; after three failed
-   attempts they stop and are left out. Cars that read no codes within 12 s, or sit on their charger,
-   are left out. Then **3-2-1-GO**.
+   overshoot the line or arrive in the wrong lane do a full lap before trying again. Missing position
+   triggers repeated 1.5-second recovery bursts with 2-second pauses. Charging or disconnected cars
+   remain pending. The countdown waits until every participant is ready; only parked cars are excluded.
 4. **Race**. **Back** (Esc) stops everything and returns to pairing. **F11** toggles fullscreen.
    After a finish, **Start / Options** starts another grid and countdown with the same selections.
    Replace an off-track car, then press **right-stick / R3 / R**, or click **RECOVER**. The controller

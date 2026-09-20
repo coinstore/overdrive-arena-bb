@@ -487,6 +487,7 @@ class Renderer:
         self.buttons = {}
         by = ly + 26
         race_ok = game.can_start(claims.values())
+        self.buttons["scores"] = self.button(W - 330, 18, 302, 42, "HIGH SCORES", "LT + L-stick / F2", GOLD)
         self.buttons["race"] = self.button(28, by, 240, 46, "RACE", "Start / Options / Space",
                                            OK if race_ok else (60, 62, 74), enabled=race_ok)
         scan_car = next((c for c in game.cars if c.localized()), None)
@@ -500,6 +501,8 @@ class Renderer:
         race_mode = game.mode == "race"
         self.buttons["mode"] = self.button(mx, by, 200, 46, "RACE" if race_mode else "BATTLE", "L-stick / M", (200, 150, 255) if race_mode else (255, 150, 90))
         self.buttons["laps"] = self.button(mx + 208, by, 110, 46, f"{game.lap_target} laps", "D-pad up/down", (110, 112, 130) if race_mode else (70, 72, 84), enabled=race_mode)
+        self.buttons["speed"] = self.button(mx + 326, by, 240, 46, f"MAX {game.race_speed_limit} mm/s", "R-stick / R", (120, 170, 255))
+        self.buttons["fair"] = self.button(mx + 326, by + 49, 300, 34, "FAIR " + ("ON" if game.fair_game else "OFF"), "LT + R-stick / H", OK if game.fair_game else DIM)
         self.text("laps only, no weapons" if race_mode else "blasters, mines, kills", (mx, by + 52), FAINT, self.small)
         if not race_ok:
             self.text("assign a player or AI off its charger", (28, by + 52), FAINT, self.small)
@@ -545,7 +548,7 @@ class Renderer:
         y += 27
         kind = "lap" if scope == "car" else "race"
         target = 0 if kind == "lap" else game.lap_target
-        overall = [game.records.get(game.track, game.mode, driver, kind, target) for driver in ("human", "ai")]
+        overall = [game.records.get(game.track, game.records_mode, driver, kind, target) for driver in ("human", "ai")]
         overall = [entry for entry in overall if entry]
         best = min(overall, key=lambda entry: entry["seconds"]) if overall else None
         self.text((f"MAP BEST {'LAP' if kind == 'lap' else str(target) + '-LAP RACE'}  "
@@ -556,7 +559,7 @@ class Renderer:
         self.text_right("BEST LAP", lap_x, y, DIM, self.small)
         self.text_right(f"{game.lap_target} LAPS", race_x, y, DIM, self.small)
         y += 22
-        rows = game.records.leaderboard(game.track, game.mode, scope, game.lap_target)
+        rows = game.records.leaderboard(game.track, game.records_mode, scope, game.lap_target)
         capacity = max(1, (rect.bottom - y - 26) // 30)
         # Cycle pages so saved/disconnected cars and controllers remain visible.
         pages = max(1, math.ceil(len(rows) / capacity))
@@ -579,18 +582,60 @@ class Renderer:
         note = (game.records.error or (f"Page {page + 1}/{pages} · changes every 7s" if pages > 1 else "Saved for this map · fastest first"))
         self.text(note, (x, rect.bottom - 22), WARN if game.records.error else FAINT, self.small)
 
+    def scores_capacity(self) -> int:
+        return max(1, (self.screen.get_height() - 330) // 48)
+
+    def draw_scores(self, game: Game, board_index: int, page: int) -> None:
+        self.frame()
+        self.buttons = {}
+        w, h = self.screen.get_size()
+        self.text("HIGH SCORES", (28, 24), TEXT, self.title)
+        self.text("Every saved map, car and controller", (28, 64), DIM, self.small)
+        self.buttons["back"] = self.button(w - 240, 24, 212, 44, "BACK", "Esc / Back", DIM)
+        boards = game.records.archive()
+        self.buttons["previous"] = self.button(28, 104, 200, 44, "PREVIOUS", "Left / LB", DIM)
+        self.buttons["next"] = self.button(w - 228, 104, 200, 44, "NEXT", "Right / RB", DIM)
+        if not boards:
+            self.text("No high scores yet. Complete a lap to set your first record.", (28, 204), TEXT, self.font)
+            if game.records.error:
+                self.text(game.records.error, (28, 250), WARN, self.small)
+            return
+        group, rows = boards[board_index % len(boards)]
+        map_id, mode, scope, driver, kind, laps = group
+        current = game.track and map_id == game.records.map_key(game.track)
+        self.text(f"BOARD {board_index % len(boards) + 1} / {len(boards)}", (250, 115), GOLD, self.font)
+        mode_label = {"race_fair": "FAIR GAME", "race": "RACE", "battle": "BATTLE"}.get(mode, mode.upper())
+        self.text(f"{'CURRENT MAP' if current else 'MAP'} {map_id}  /  {mode_label}", (28, 168), TEXT, self.font)
+        label = {"overall": "Overall", "car": "Per car", "controller": "Per controller", "pair": "Car + controller"}.get(scope, scope)
+        self.text(f"{label}  /  {driver.upper()}  /  {'Best lap' if kind == 'lap' else laps + '-lap race'}", (28, 198), GOLD, self.font)
+        self.text("RANK    CAR", (40, 238), DIM, self.small)
+        self.text("CONTROLLER / DRIVER", (w // 3, 238), DIM, self.small)
+        self.text_right("BEST TIME", w - 44, 238, DIM, self.small)
+        capacity = self.scores_capacity()
+        pages = max(1, math.ceil(len(rows) / capacity))
+        page %= pages
+        for index, row in enumerate(rows[page * capacity:(page + 1) * capacity], page * capacity):
+            y = 262 + (index % capacity) * 48
+            pygame.draw.rect(self.screen, CARD, (28, y, w - 56, 42), border_radius=7)
+            self.text(f"{index + 1:02d}  {row['car']}", (40, y + 10), GOLD if index == 0 else TEXT, self.font)
+            driver_label = row.get("controller", row.get("driver", "Unknown"))
+            available = w - 180 - w // 3
+            while self.small.size(driver_label)[0] > available and len(driver_label) > 2:
+                driver_label = driver_label[:-2] + "…"
+            self.text(driver_label, (w // 3, y + 13), DIM, self.small)
+            self.text_right(f"{row['seconds']:.3f}s", w - 44, y + 10, TEXT, self.font)
+        self.buttons["page_previous"] = self.button(28, h - 56, 215, 40, "PAGE UP", "D-pad up / +", DIM)
+        self.buttons["page_next"] = self.button(w - 243, h - 56, 215, 40, "PAGE DOWN", "D-pad down / -", DIM)
+        self.text(f"Page {page + 1}/{pages}  /  {len(rows)} records", (265, h - 43), DIM, self.small)
+
     def draw_scan(self, game: Game, scanners: dict, elapsed: float) -> None:
         self.frame()
-        mv = self.ensure_map(game.track)
-        if mv:
-            mv.draw(self.screen, game, self.font, self.small)
-        else:
-            self.draw_no_track("scanning...")
+        self.draw_scan_map(scanners)
         pr = self.panel_rect()
         pygame.draw.rect(self.screen, PANEL, pr, border_radius=10)
         x, y = pr.x + 18, pr.y + 14
         y += self.text("SCANNING TRACK", (x, y), TEXT, self.title) + 4
-        y += self.text(f"all cars drive one lap   ·   elapsed {elapsed:3.0f}s", (x, y), DIM, self.small) + 14
+        y += self.text(f"shared map / all cars   ·   elapsed {elapsed:3.0f}s", (x, y), DIM, self.small) + 14
         for c, sc in scanners.items():
             box = pygame.Rect(x, y, pr.width - 36, 92)
             pygame.draw.rect(self.screen, CARD, box, border_radius=10)
@@ -598,7 +643,6 @@ class Renderer:
             self.text(c.name, (box.x + 18, box.y + 8), TEXT, self.big)
             with sc.lock:
                 state = sc.state
-                lap = list(sc.lap)
                 seen = sc.pieces_seen
             if state == "on the charger":
                 col, label = (120, 200, 255), "ON ITS CHARGER - skipped"
@@ -606,17 +650,64 @@ class Renderer:
                 col, label = WARN, "NOT ON THE TRACK - read no codes, stopped"
             elif sc.done:
                 col, label = OK, state
+            elif sc.stopped:
+                col, label = WARN, state
             elif seen == 0:
                 col, label = DIM, "driving, waiting for the first track code..."
             else:
                 col, label = TEXT, state
             self.text(label, (box.x + 18, box.y + 40), col, self.small)
-            seq = "  ".join(("?" if e["id"] is None else str(e["id"])) + (e["turn"] or "") for e in lap[-12:])
-            self.text(seq or "-", (box.x + 18, box.y + 62), FAINT, self.small)
+            details = f"{getattr(sc, 'commanded_speed', 0)} mm/s / {seen} codes / {sc.inferred_boundaries} repaired boundaries"
+            self.text(details, (box.x + 18, box.y + 62), FAINT, self.small)
             y += box.height + 8
-        self.text("the first car to close a lap wins; cars reading nothing for 8 s are flagged as off the track",
+        self.text("cars share missing pieces and turn measurements",
                   (x, y + 6), FAINT, self.small)
+        self.text("speed adapts 400-500 mm/s; lost codes stop that car", (x, y + 24), FAINT, self.small)
         self.text("Back / Esc: cancel", (x, pr.bottom - 30), FAINT, self.small)
+
+    def draw_scan_map(self, scanners: dict) -> None:
+        from anki.track import build_track, piece_type, UNKNOWN
+        rect = self.map_rect()
+        pygame.draw.rect(self.screen, PANEL, rect)
+        evidence = next(iter(scanners.values())).evidence if scanners else None
+        raw = evidence.preview() if evidence else []
+        # Unknown geometry is explicitly a gap, never a guessed straight.
+        prefix = []
+        for row in raw:
+            if row["id"] is None or piece_type(row["id"]) == UNKNOWN or (piece_type(row["id"]) == TURN and not row["turn"]):
+                break
+            prefix.append(row)
+        self.text("LIVE TRACK RECONSTRUCTION", (rect.x + 18, rect.y + 16), TEXT, self.big)
+        contributing = sum(sc.pieces_seen > 0 for sc in scanners.values())
+        self.text(f"{len(raw)} pieces seen / {len(prefix)} placed / {contributing} cars reporting",
+                  (rect.x + 18, rect.y + 48), DIM, self.small)
+        if prefix:
+            map_rect = pygame.Rect(rect.x + 12, rect.y + 78, rect.width - 24, max(80, rect.height - 170))
+            signature = (tuple((r["id"], r["turn"], r["reversed"]) for r in prefix), tuple(map_rect))
+            if getattr(self, "_scan_signature", None) != signature:
+                self._scan_view = MapView(build_track(prefix), map_rect, margin=32)
+                self._scan_signature = signature
+            view = self._scan_view
+            self.screen.blit(view.road(), map_rect)
+            for index, row in enumerate(prefix):
+                point = view.to_screen(*view.track.world_point(index, .5))
+                pygame.draw.circle(self.screen, (25, 30, 40), point, 14)
+                img = self.small.render(str(index + 1), True, TEXT)
+                self.screen.blit(img, (point[0] - img.get_width() // 2, point[1] - img.get_height() // 2))
+            end = view.to_screen(*view.track.world_point(len(prefix) - 1, 1))
+            pygame.draw.circle(self.screen, GOLD, end, 7 + int(3 * (1 + math.sin(time.monotonic() * 4))))
+        else:
+            self.text("Waiting for start / finish codes...", (rect.x + 30, rect.centery), DIM, self.font)
+        y = rect.bottom - 76
+        self.text("OBSERVED SEQUENCE  /  ? = unresolved gap", (rect.x + 18, y), DIM, self.small)
+        width = min(56, max(18, (rect.width - 36) // max(1, len(raw))))
+        for index, row in enumerate(raw[:max(1, (rect.width - 36) // width)]):
+            box = pygame.Rect(rect.x + 18 + index * width, y + 24, width - 4, 28)
+            known = row["id"] is not None and (piece_type(row["id"]) != TURN or row["turn"])
+            pygame.draw.rect(self.screen, (36, 55, 48) if known else (80, 55, 28), box, border_radius=4)
+            label = str(row["id"]) + (row["turn"] or "") if known else "?"
+            img = self.small.render(label, True, OK if known else WARN)
+            self.screen.blit(img, (box.centerx - img.get_width() // 2, box.y + 6))
 
     def draw_race(self, game: Game, controls: str, overlay: Optional[str] = None, sub: str = "") -> None:
         self.frame()
@@ -707,6 +798,8 @@ class Renderer:
             pygame.draw.rect(self.screen, (40, 40, 48), (bx, sy, bw - 90, 5), border_radius=2)
             pygame.draw.rect(self.screen, c.color, (bx, sy, int((bw - 90) * min(1.0, spd / max(1, c.max_speed))), 5), border_radius=2)
             self.text(f"{spd:>4} / {c.max_speed} mm/s", (bx, sy + 8), DIM, self.small)
+            if c.fair_penalty:
+                self.text(f"FAIR -{c.fair_penalty} mm/s", (bx + 180, sy + 8), WARN, self.small)
             pos_age = f"{max(0, now - c.loc.last_update):.1f}s" if c.loc and c.loc.index is not None else "--"
             radio_age = f"{max(0, now - c.last_radio_t):.1f}s" if c.last_radio_t else "--"
             self.text(f"P {pos_age}  BT {radio_age}", (bx + 150, sy + 8), DIM, self.small)

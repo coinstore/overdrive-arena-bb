@@ -30,7 +30,7 @@ from pygame._sdl2 import controller as sdlc
 
 from anki import protocol as P
 from anki.ble_worker import BleWorker
-from anki.track import Track, TrackScanner
+from anki.track import Track, TrackScanner, ScanEvidence
 from anki.vehicle import Vehicle, discover
 from game import inputs as I
 from game.game import CarState, Game
@@ -41,11 +41,13 @@ log = logging.getLogger("app")
 
 TICK_HZ = 50
 TRACK_FILE = Path(__file__).parent / "track.json"
-SCAN_SPEED = 380
+SCAN_SPEED = 450
+SCAN_SPEEDS = (450, 500, 400)
 SCAN_TIMEOUT_S = 90
 SCAN_NO_DATA_S = 8.0
 
 PAIRING, SCANNING, GRID, COUNTDOWN, RACE = "pairing", "scanning", "grid", "countdown", "race"
+SCORES = "scores"
 
 CONTROLS_PAIRING = ("pad:  Left/Right car   A claim   B release   X AI   Y scan   L-stick mode   Up/Down laps   Start/Options RACE   Back quit\n"
                     "keys: Left/Right move   Enter take car   Backspace release   Tab AI level/park   T scan track   M mode   Space RACE   Esc quit")
@@ -77,6 +79,8 @@ class App:
         self.identified: dict[int, bool] = {}
         self.click: Optional[tuple[int, int]] = None
         self.lap_choices = (3, 5, 10, 20)
+        self.live_scores = None
+        self.scores_published_at = 0.0
 
     # ------------------------------------------------------------ setup
     @property
@@ -134,6 +138,7 @@ class App:
         self.game.records = Records(Path(__file__).parent / "records.json")
         self.game.mode = self.args.mode
         self.game.lap_target = self.args.laps
+        self.game.set_race_speed_limit(self.args.max_speed if self.args.max_speed is not None else 2000)
         for cs in self.cars:
             cs.lights_idle()
         for s in self.sources:
@@ -151,6 +156,9 @@ class App:
             if "scan" in btns and btns["scan"].collidepoint(pos):
                 self.start_scan_all()
                 return True
+            elif "scores" in btns and btns["scores"].collidepoint(pos):
+                self.open_scores()
+                return True
             elif "race" in btns and btns["race"].collidepoint(pos):
                 if g.can_start(self.claims.values()):
                     self.start_race()
@@ -161,6 +169,10 @@ class App:
             elif "laps" in btns and btns["laps"].collidepoint(pos):
                 i = self.lap_choices.index(g.lap_target) if g.lap_target in self.lap_choices else -1
                 g.lap_target = self.lap_choices[(i + 1) % len(self.lap_choices)]
+            elif "speed" in btns and btns["speed"].collidepoint(pos):
+                g.set_race_speed_limit(g.race_speed_limit + 200 if g.race_speed_limit < 2000 else 200)
+            elif "fair" in btns and btns["fair"].collidepoint(pos):
+                g.fair_game = not g.fair_game
         for s in self.sources:
             if not s.alive():
                 continue
@@ -197,7 +209,20 @@ class App:
                 self.start_scan_all()
                 return True
             if s.pressed(I.TOGGLE_MODE):
+                if s.brake() > .5:
+                    self.open_scores()
+                    return True
                 self.toggle_mode()
+            if s.pressed(I.SCORES):
+                self.open_scores()
+                return True
+            if s.pressed(I.RECOVER):
+                if s.brake() > .5:
+                    g.fair_game = not g.fair_game
+                else:
+                    g.set_race_speed_limit(g.race_speed_limit + 200 if g.race_speed_limit < 2000 else 200)
+            if s.pressed(I.FAIR_GAME):
+                g.fair_game = not g.fair_game
             if s.pressed(I.LIMIT_UP) or s.pressed(I.LIMIT_DOWN):
                 step = 1 if s.pressed(I.LIMIT_UP) else -1
                 index = self.lap_choices.index(g.lap_target) if g.lap_target in self.lap_choices else 0
@@ -240,6 +265,50 @@ class App:
         self.state = GRID
         self.status = ""
 
+    def open_scores(self) -> None:
+        import webbrowser
+        from game.score_page import LiveScores
+        try:
+            self.game.records.remember_track(self.game.track)
+            if getattr(self, 'live_scores', None) is None:
+                self.live_scores = LiveScores(self.game.records, self.game.track)
+            else:
+                self.live_scores.publish(self.game.records, self.game.track)
+            webbrowser.open(self.live_scores.url, new=2, autoraise=False)
+            self.status = "Live scores open: leave the browser on your second screen"
+        except OSError as exc:
+            self.status = f"Could not open high scores: {exc}"
+
+    def scores_tick(self) -> None:
+        action = None
+        if self.click is not None:
+            pos, self.click = self.click, None
+            action = next((key for key, rect in self.renderer.buttons.items() if rect.collidepoint(pos)), None)
+        for source in self.sources:
+            if not source.alive():
+                continue
+            if source.pressed(I.BACK):
+                action = "back"
+            elif source.pressed(I.MENU_LEFT):
+                action = "previous"
+            elif source.pressed(I.MENU_RIGHT):
+                action = "next"
+            elif source.pressed(I.LIMIT_UP):
+                action = "page_previous"
+            elif source.pressed(I.LIMIT_DOWN):
+                action = "page_next"
+        if action == "back":
+            self.state = PAIRING
+            return
+        boards = self.game.records.archive()
+        if action in ("previous", "next"):
+            self.score_board = (self.score_board + (1 if action == "next" else -1)) % max(1, len(boards))
+            self.score_page = 0
+        if action in ("page_previous", "page_next") and boards:
+            capacity = self.renderer.scores_capacity()
+            pages = max(1, (len(boards[self.score_board][1]) + capacity - 1) // capacity)
+            self.score_page = (self.score_page + (1 if action == "page_next" else -1)) % pages
+
     def grid_tick(self, dt: float) -> None:
         g = self.game
         assert g is not None
@@ -274,22 +343,26 @@ class App:
 
     # ------------------------------------------------------------ scanning
     def start_scan_all(self) -> None:
-        """Every connected car drives and scans; the first closed lap wins. Also reveals which cars are on the rails."""
+        """Cars share start-aligned scan evidence until a complete loop closes."""
         g = self.game
         assert g is not None
         g.stop_all()
         self.scanners = {}
+        evidence = ScanEvidence()
         for c in self.cars:
             if not c.car.connected:
                 continue
-            sc = TrackScanner()
+            sc = TrackScanner(evidence, c.name)
             self.scanners[c] = sc
             if c.charging:
                 sc.state = "on the charger"
+                sc.stopped = True
                 continue
             c.extra_listener = sc.on_message
             c.lights_idle()
-            self.ble.fire(c.car.set_speed(SCAN_SPEED, 500))
+            c.penalty_until = c.dead_until = c.stun_until = 0
+            sc.commanded_speed = SCAN_SPEED
+            c.command_speed(SCAN_SPEED, time.monotonic())
         if not any(sc.state != "on the charger" for sc in self.scanners.values()):
             self.status = "every car is on its charger - take one off and put it on the track to scan"
             self.scanners = {}
@@ -301,7 +374,7 @@ class App:
     def _end_scan(self) -> None:
         for c, _sc in self.scanners.items():
             c.extra_listener = None
-            self.ble.fire(c.car.set_speed(0, 2500))
+            c.hard_stop(time.monotonic())
         self.state = PAIRING
         self.identified.clear()
 
@@ -309,17 +382,31 @@ class App:
         g = self.game
         assert g is not None
         cancel = any(s.pressed(I.BACK) for s in self.sources)
-        elapsed = time.monotonic() - self.scan_started
+        now = time.monotonic()
+        elapsed = now - self.scan_started
         # cars that read nothing after a while are not on the rails: stop them, keep scanning with the others
         for c, sc in self.scanners.items():
             if sc.state == "on the charger":
                 continue
-            if elapsed > SCAN_NO_DATA_S and sc.pieces_seen == 0 and sc.state != "not on the track":
-                sc.state = "not on the track"
-                self.ble.fire(c.car.set_speed(0, 2500))
-                log.info("%s read no track codes during the scan", c.name)
+            if not c.car.connected or c.charging:
+                sc.state = "disconnected" if not c.car.connected else "on the charger"
+                sc.stopped = True
+            if (elapsed > SCAN_NO_DATA_S and sc.pieces_seen == 0) or (sc.last_position_t and now - sc.last_position_t > 3.5):
+                sc.state = "not on the track" if sc.pieces_seen == 0 else "lost track codes - stopped"
+                sc.stopped = True
+            if sc.stopped:
+                if not getattr(sc, "stop_sent", False):
+                    c.hard_stop(now)
+                    sc.commanded_speed = 0
+                    sc.stop_sent = True
+                continue
+            speed = SCAN_SPEEDS[max(sc.laps_tried, int(elapsed / 20)) % len(SCAN_SPEEDS)]
+            if speed != sc.commanded_speed:
+                sc.commanded_speed = speed
+                c.command_speed(speed, now)
+                log.info("%s scan retry: %d mm/s (%s)", c.name, speed, sc.last_retry)
         winner = next(((c, sc) for c, sc in self.scanners.items() if sc.done and sc.track), None)
-        all_dead = all(sc.state in ("not on the track", "on the charger") for sc in self.scanners.values())
+        all_dead = all(sc.stopped for sc in self.scanners.values())
         if winner or cancel or all_dead or elapsed > SCAN_TIMEOUT_S:
             off = [c.name for c, sc in self.scanners.items() if sc.state == "not on the track"]
             charging = [c.name for c, sc in self.scanners.items() if sc.state == "on the charger"]
@@ -328,14 +415,16 @@ class App:
                 c, sc = winner
                 sc.track.save(TRACK_FILE)  # type: ignore[union-attr]
                 g.set_track(sc.track)
-                self.status = f"track scanned by {c.name}: {len(sc.track)} pieces"  # type: ignore[arg-type]
+                g.records.remember_track(sc.track)
+                contributors = ", ".join(sorted(sc.evidence.contributors)) or c.name
+                self.status = f"combined scan ({contributors}): {len(sc.track)} pieces"  # type: ignore[arg-type]
                 if off:
                     self.status += f"   -   NOT on the track: {', '.join(off)}"
                 if charging:
                     self.status += f"   -   on the charger: {', '.join(charging)}"
                 log.info("track: %s", sc.track.describe())  # type: ignore[union-attr]
             elif all_dead:
-                self.status = "no car read any track codes - put the cars on the rails and scan again"
+                self.status = "scan stopped: replace cars on the track and press Y / T to retry"
             else:
                 self.status = "scan cancelled" if cancel else "scan timed out without a closed lap"
 
@@ -361,7 +450,7 @@ class App:
                 self.start_race()
                 return
         g.tick(dt)
-        if g.finished and time.monotonic() - g.finish_t > 7.0:
+        if g.finished and g.finish_celebration_t and time.monotonic() - g.finish_celebration_t > 14.0:
             winner = g.winner
             g.stop_all()
             self.state = PAIRING
@@ -432,6 +521,8 @@ class App:
                 elif self.state == SCANNING:
                     self.scanning_tick()
                     self.game.tick(dt)  # keeps localizers advancing, no driving (not running)
+                elif self.state == SCORES:
+                    self.scores_tick()
                 elif self.state == GRID:
                     self.grid_tick(dt)
                 elif self.state == COUNTDOWN:
@@ -439,6 +530,9 @@ class App:
                 elif self.state == RACE:
                     self.race_tick(dt)
                 self.keyboard.end_frame()
+                if self.live_scores and t0 - self.scores_published_at >= 1.0:
+                    self.live_scores.publish(self.game.records, self.game.track)
+                    self.scores_published_at = t0
                 self.maybe_reconnect(t0)
                 if t0 - last_batt > 4:
                     for c in self.cars:
@@ -500,6 +594,8 @@ class App:
             self.renderer.draw_pairing(g, self.sources, self.cursors, self.claims, self.status, CONTROLS_PAIRING)
         elif self.state == SCANNING:
             self.renderer.draw_scan(g, self.scanners, time.monotonic() - self.scan_started)
+        elif self.state == SCORES:
+            self.renderer.draw_scores(g, self.score_board, self.score_page)
         elif self.state == GRID:
             placed, total = g.grid_summary()
             self.renderer.draw_race(g, CONTROLS_RACE, overlay=f"TO THE START LINE  {placed}/{total}",
@@ -514,6 +610,9 @@ class App:
         pygame.display.flip()
 
     def shutdown(self) -> None:
+        if getattr(self, 'live_scores', None):
+            self.live_scores.close()
+            self.live_scores = None
         log.info("stopping cars...")
 
         async def stop_all():

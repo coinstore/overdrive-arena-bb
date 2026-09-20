@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pygame  # noqa: E402
 
 from anki import protocol as P  # noqa: E402
-from anki.track import TrackScanner  # noqa: E402
+from anki.track import TrackScanner, ScanEvidence  # noqa: E402
 from game.game import CarState, Game  # noqa: E402
 from game.render import Renderer  # noqa: E402
 from game.inputs import Keyboard  # noqa: E402
@@ -107,6 +107,17 @@ def main(out_dir: Path):
     kb2 = Keyboard(); kb2.name = "Xbox One S Controller"; kb2.short = "P1"
     r.draw_pairing(game, [kb2, kb], {kb: 1, kb2: 0}, {kb2: cars[0]}, "P1 (Xbox One S Controller) drives X52", "controls line 1\ncontrols line 2")
     pygame.image.save(screen, str(out_dir / "render_pairing.png"))
+    evidence = ScanEvidence()
+    scanners = {c: TrackScanner(evidence, c.name) for c in cars}
+    for i, scanner in enumerate(scanners.values()):
+        scanner.lap = [dict(row) for row in sc.evidence.attempts[-1][:4 + i]]
+        scanner.state = f"recording lap: {len(scanner.lap)} pieces"
+        scanner.pieces_seen = 32 + i * 9
+        scanner.commanded_speed = 450
+    r.draw_scan(game, scanners, 17)
+    pygame.image.save(screen, str(out_dir / "render_scan.png"))
+    r.draw_scores(game, 0, 0)
+    pygame.image.save(screen, str(out_dir / "render_scores.png"))
     print("saved", out_dir / "render_race.png", out_dir / "render_pairing.png")
     print("events:", [e[1] for e in game.events])
     print("battery:", [c.battery.summary() for c in cars])

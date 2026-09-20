@@ -15,7 +15,7 @@ KEY_THROTTLE_RAMP_S = 0.8
 
 # edge-triggered actions
 (STOP, UTURN, FIRE, MINE, LANE_LEFT, LANE_RIGHT, LIMIT_UP, LIMIT_DOWN,
- MENU_LEFT, MENU_RIGHT, SELECT, RELEASE, TOGGLE_AI, READY, BACK, SCAN, TOGGLE_MODE, RECOVER, BOOST) = range(19)
+ MENU_LEFT, MENU_RIGHT, SELECT, RELEASE, TOGGLE_AI, READY, BACK, SCAN, TOGGLE_MODE, RECOVER, BOOST, FAIR_GAME, SCORES) = range(21)
 
 ACTION_NAMES = {STOP: "stop", UTURN: "u-turn", FIRE: "fire", MINE: "mine", LANE_LEFT: "lane left",
                 LANE_RIGHT: "lane right", LIMIT_UP: "limit +", LIMIT_DOWN: "limit -", MENU_LEFT: "menu left",
@@ -128,6 +128,8 @@ class Keyboard(InputSource):
     name = "keyboard"
     short = "KB"
     KEYS = {
+        FAIR_GAME: (pygame.K_h,),
+        SCORES: (pygame.K_F2,),
         STOP: (pygame.K_SPACE,), UTURN: (pygame.K_u,), FIRE: (pygame.K_f, pygame.K_RCTRL), MINE: (pygame.K_g, pygame.K_RSHIFT),
         LANE_LEFT: (pygame.K_q,), LANE_RIGHT: (pygame.K_e,),
         LIMIT_UP: (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS, pygame.K_PAGEUP),
