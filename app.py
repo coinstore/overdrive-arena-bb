@@ -5,13 +5,14 @@ Flow:  connect to every car  ->  PAIRING screen (claim a car per controller, sca
        ->  RACE (Back/Esc returns to pairing)
 
 Gamepad (Xbox names; PS5: Cross=A, Circle=B, Square=X, Triangle=Y, Share=Back, Options=Start):
-  RT / LT             throttle / brake          Left stick X   steer between lanes
-  LB / RB, D-pad L/R  snap one lane             D-pad up/down  speed limit +/- 100
+  RT / LT             accelerate / decelerate   Left stick X   steer between lanes
+                      (releasing holds speed)  D-pad up/down  speed limit +/- 100
+  LB / RB, D-pad L/R  snap one lane
   X                   fire blaster              Y              drop mine (pairing: scan track)
   A                   U-turn (pairing: claim)   B              emergency stop
   Start               start race                Back           back / quit
 
-Keyboard:  W/S throttle-brake  A/D steer  Q/E lane  F fire  G mine  U u-turn  Space stop
+Keyboard:  W/S accelerate/decelerate (holds)  A/D steer  Q/E lane  F fire  G mine  U u-turn  Space stop
            +/- limit   Enter claim/start   T scan track   Esc back/quit
 """
 from __future__ import annotations
@@ -51,8 +52,8 @@ SCORES = "scores"
 
 CONTROLS_PAIRING = ("pad:  Left/Right car   A claim   B release   X AI   Y scan   L-stick mode   Up/Down laps   Start/Options RACE   Back quit\n"
                     "keys: Left/Right move   Enter take car   Backspace release   Tab AI level/park   T scan track   M mode   Space RACE   Esc quit")
-CONTROLS_RACE = ("pad: RT gas  LT brake  stick/LB/RB lanes  X fire  Y mine  A u-turn  B stop  D-pad limit  L-stick boost  R-stick recover  Back pairing\n"
-                 "key: W/S gas/brake  A/D steer  Q/E lanes  F fire  G mine  U u-turn  Space stop  +/- limit  LShift boost  R recover  Esc pairing  F11 fullscreen")
+CONTROLS_RACE = ("pad: R2 gas  L2 brake (speed holds)  stick/LB/RB lanes  X fire  Y mine  A u-turn  B stop  D-pad limit  L-stick boost  R-stick recover  Back pairing\n"
+                 "key: W/S gas/brake (holds)  A/D steer  Q/E lanes  F fire  G mine  U u-turn  Space stop  +/- limit  LShift boost  R recover  Esc pairing  F11 fullscreen")
 
 
 class App:
@@ -362,7 +363,7 @@ class App:
             c.lights_idle()
             c.penalty_until = c.dead_until = c.stun_until = 0
             sc.commanded_speed = SCAN_SPEED
-            c.command_speed(SCAN_SPEED, time.monotonic())
+            c.command_speed(SCAN_SPEED, time.monotonic(), force=True)
         if not any(sc.state != "on the charger" for sc in self.scanners.values()):
             self.status = "every car is on its charger - take one off and put it on the track to scan"
             self.scanners = {}
@@ -403,7 +404,7 @@ class App:
             speed = SCAN_SPEEDS[max(sc.laps_tried, int(elapsed / 20)) % len(SCAN_SPEEDS)]
             if speed != sc.commanded_speed:
                 sc.commanded_speed = speed
-                c.command_speed(speed, now)
+                c.command_speed(speed, now, force=True)
                 log.info("%s scan retry: %d mm/s (%s)", c.name, speed, sc.last_retry)
         winner = next(((c, sc) for c, sc in self.scanners.items() if sc.done and sc.track), None)
         all_dead = all(sc.stopped for sc in self.scanners.values())

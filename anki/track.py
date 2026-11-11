@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import threading
 import time
 from collections import Counter, deque
@@ -23,6 +24,13 @@ from . import protocol as P
 from .position_filter import PositionFilter
 
 DATA_FILE = Path(__file__).parent / "data" / "offsetInfo.json"
+
+# The filter's estimate is our best current position. Rendering it directly
+# (instead of the monotonic lap estimate) lets small backward corrections blend
+# in smoothly. A small lead compensates BLE notification latency; both can be
+# tuned on real hardware via the environment.
+RENDER_RAW = os.environ.get("ARENA_RENDER_RAW", "1") != "0"
+RENDER_LEAD_S = float(os.environ.get("ARENA_RENDER_LEAD", "0.0"))
 
 CELL_MM = 560.0                       # one straight piece
 CURVE_RADIUS_MM = CELL_MM / 2         # centerline radius, measured from wheel travel (~280 mm)
@@ -657,6 +665,27 @@ class CarLocalizer:
         if self.index is None:
             return None
         return self.track.world_point(self.index, self.frac, self.lane_mm)
+
+    def render_world(self, now: float, lead: Optional[float] = None,
+                     raw: Optional[bool] = None) -> Optional[tuple[float, float]]:
+        """Pose for the map: current filter estimate, optionally projected by a small BLE latency lead."""
+        if not self.on_track or self.filter.position is None:
+            return None
+        lead = RENDER_LEAD_S if lead is None else lead
+        raw = RENDER_RAW if raw is None else raw
+        if raw:
+            distance = self.filter.predict(now + lead)
+            if distance is None:
+                return None
+            index, frac = self.filter.pose(distance)
+            return self.track.world_point(index, frac, self.lane_mm)
+        if lead:
+            base = self._display_distance if self._display_distance is not None else self.filter.predict(now)
+            if base is None:
+                return None
+            index, frac = self.filter.pose(base + self.filter.speed * lead)
+            return self.track.world_point(index, frac, self.lane_mm)
+        return self.world()
 
     def heading(self) -> float:
         if self.index is None:

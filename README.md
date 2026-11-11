@@ -110,21 +110,25 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
    is limited to 1.5 seconds at up to 250 mm/s. Brake or emergency stop cancels a player's search.
 
 BLE notifications are timestamped on arrival, before parsing or queueing. Position fixes are applied at
-that time and projected to the current frame; older out-of-order motion updates are ignored. Delayed
-forward corrections hold the displayed car briefly instead of animating it backwards. The firmware's
-position packet has no device timestamp, so this compensates app queue delays, not radio transit time.
+that time and projected to the current frame; older out-of-order motion updates are ignored. The map
+renders the filter's current estimate with a short visual interpolation, so small backward corrections
+blend in instead of making the sprite jump or stand still. The firmware's position packet has no device
+timestamp, so this compensates app queue delays, not radio transit time.
 
-The map and lap counter share one continuous, unwrapped route estimate. Every update and frame prediction
-is kept in timestamp order, so a forward circuit shown by the estimate completes a lap even if the finish
-codes were missed or several updates arrived between frames. Crossing times are interpolated along the
-track geometry. BLE corrections cannot subtract distance already displayed or count a finish twice.
-Prediction freezes after one second without a fix; silence holds progress instead of erasing it or
-inventing more laps. Reversal, explicit off-track reports and recovery reset the partial lap. The HUD
-shows current-lap progress and reset reasons. A complete forward circuit is required for a timed lap.
+The lap counter uses one continuous, unwrapped route estimate. Every update and frame prediction is kept
+in timestamp order, so a forward circuit completes a lap even if the finish codes were missed or several
+updates arrived between frames. Crossing times are interpolated along the track geometry. The lap counter
+cannot subtract distance already counted or count a finish twice. Prediction freezes after one second
+without a fix; silence holds lap progress instead of erasing it or inventing more laps. Reversal, explicit
+off-track reports and recovery reset the partial lap. The HUD shows current-lap progress and reset reasons.
+A complete forward circuit is required for a timed lap.
+
+The map smoothing and optional BLE-latency lead can be tuned on real hardware with
+`ARENA_CAR_SMOOTHING` (default 20) and `ARENA_RENDER_LEAD` (seconds, default 0).
 
 | Action              | Xbox            | PS5           | Keyboard          |
 |---------------------|-----------------|---------------|-------------------|
-| Throttle / brake    | RT / LT         | R2 / L2       | W / S             |
+| Accelerate / decelerate | RT / LT     | R2 / L2       | W / S             |
 | Steer (analog)      | Left stick X    | Left stick X  | A / D             |
 | Snap lane           | LB / RB, D-pad  | L1 / R1       | Q / E             |
 | Fire blaster        | X               | Square        | F                 |
@@ -138,10 +142,16 @@ shows current-lap progress and reset reasons. A complete forward circuit is requ
 
 ### Speed and boost
 
-Player throttle uses a separate **2000 mm/s command limit** by default. Full RT/R2 (or full keyboard
-throttle) requests that speed; D-pad up/down or +/- changes the player's limit by 100 mm/s. The limit
-is retained when you release/reclaim a car and does not raise its AI limit. Actual motor speed may be
-lower. `--player-max-speed` sets a lower initial limit; `--max-speed` sets the AI limit.
+Player speed is a **held target**: RT/R2 (or W) raises it, LT/L2 (or S) lowers it, and releasing the
+input keeps the current speed, like the slider in the official app. Analog trigger travel scales how
+fast the target changes. D-pad up/down or +/- changes the player's ceiling by 100 mm/s; the target is
+clamped to that ceiling and the shared race limit. The limit is retained when you release/reclaim a
+car and does not raise its AI limit. Actual motor speed may be lower. `--player-max-speed` sets a lower
+initial limit; `--max-speed` sets the AI limit.
+
+Speed writes are capped at **10 Hz** so a car's BLE link stays free for position updates; emergency
+stops are sent immediately. This avoids the map freezing for a second and jumping when analog input
+would otherwise cause dozens of speed writes per second.
 
 **Left-stick click / Left Shift** requests a 0.6-second straight boost, with a 6-second cooldown.
 Hard and Extreme AI use it automatically when possible. The boost ceiling is 150% of the normal limit,

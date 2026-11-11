@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 import random
 import time
 from collections import deque
@@ -32,6 +33,11 @@ ROAD_HALF_MM = 112.0
 LANES_MM = (-68.0, -23.0, 23.0, 68.0)
 
 BATTERY_COLORS = {"ok": OK, "weak": WARN, "low": WARN, "critical": BAD, "unknown": FAINT, "charging": (120, 200, 255)}
+
+# A higher rate follows the filter more closely. The filter already smooths,
+# so the renderer only needs a short interpolation to hide small corrections.
+# Environment override is useful for tuning on real hardware.
+CAR_SMOOTHING_RATE = float(os.environ.get("ARENA_CAR_SMOOTHING", "20"))
 
 
 def lerp(a: float, b: float, t: float) -> float:
@@ -77,7 +83,7 @@ class CarView:
             if self.x is None or self.y is None or math.hypot(target[0] - self.x, target[1] - self.y) > 400:
                 self.x, self.y = target
             else:
-                k = min(1.0, dt * 9.0)
+                k = min(1.0, dt * CAR_SMOOTHING_RATE)
                 self.x = lerp(self.x, target[0], k)
                 self.y = lerp(self.y, target[1], k)
             if not self.trail or math.hypot(self.x - self.trail[-1][0], self.y - self.trail[-1][1]) > 12:
@@ -195,7 +201,8 @@ class MapView:
         # trails
         for c in game.cars:
             v = self.views.setdefault(c.index, CarView())
-            v.update(c.world() if c.map_position_known() else None, now, dt, c.hp)
+            target = c.render_world(now) if c.map_position_known() else None
+            v.update(target, now, dt, c.hp)
             pts = list(v.trail)
             for i in range(1, len(pts)):
                 age = now - pts[i][2]

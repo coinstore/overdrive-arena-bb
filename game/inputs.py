@@ -11,7 +11,6 @@ log = logging.getLogger("game.inputs")
 DEADZONE = 0.15
 TRIGGER_DEADZONE = 0.04
 AXIS_MAX = 32767.0
-KEY_THROTTLE_RAMP_S = 0.8
 
 # edge-triggered actions
 (STOP, UTURN, FIRE, MINE, LANE_LEFT, LANE_RIGHT, LIMIT_UP, LIMIT_DOWN,
@@ -91,10 +90,12 @@ class Pad(InputSource):
         return self.ctrl.get_axis(a) / AXIS_MAX
 
     def throttle(self) -> float:
+        # Analog travel scales how quickly the held speed target rises.
         v = self._axis(pygame.CONTROLLER_AXIS_TRIGGERRIGHT)
         return 0.0 if v < TRIGGER_DEADZONE else min(1.0, v)
 
     def brake(self) -> float:
+        # Analog travel scales how quickly the held speed target falls.
         v = self._axis(pygame.CONTROLLER_AXIS_TRIGGERLEFT)
         return 0.0 if v < TRIGGER_DEADZONE else min(1.0, v)
 
@@ -155,10 +156,9 @@ class Keyboard(InputSource):
 
     def poll(self, dt: float) -> None:
         self._keys = pygame.key.get_pressed()
-        if self._keys[pygame.K_w] or self._keys[pygame.K_UP]:
-            self._throttle = min(1.0, self._throttle + dt / KEY_THROTTLE_RAMP_S)
-        else:
-            self._throttle = 0.0
+        # W/Up and S/Down are rate inputs for the held speed target; the game
+        # ramps the target, and releasing both keys keeps the current speed.
+        self._throttle = 1.0 if (self._keys[pygame.K_w] or self._keys[pygame.K_UP]) else 0.0
 
     def throttle(self) -> float:
         return self._throttle

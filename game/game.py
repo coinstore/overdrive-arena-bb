@@ -29,6 +29,9 @@ MAX_ABS_OFFSET = 68.0
 
 SPEED_SEND_MIN_DELTA = 15
 SPEED_KEEPALIVE_S = 0.5
+SPEED_SEND_INTERVAL_S = 0.1      # cap speed writes at 10 Hz; fast enough for motor control, leaves BLE room for position fixes
+PLAYER_ACCEL_RATE = 900.0        # mm/s^2 at full R2/W; analog trigger travel scales this
+PLAYER_BRAKE_RATE = 1800.0       # mm/s^2 at full L2/S
 LANE_SEND_MIN_DELTA = 3.0
 LANE_SEND_INTERVAL_S = 0.1
 LANE_SYNC_IDLE_S = 1.5
@@ -192,6 +195,7 @@ class CarState:
 
         self._last_speed_sent = 0
         self._last_speed_t = 0.0
+        self.cruise_speed = 0.0             # player's held target speed (R2/L2 or W/S), not a direct trigger value
         self._last_lane_sent = 0.0
         self._last_lane_t = 0.0
         self._last_steer_t = 0.0
@@ -331,7 +335,7 @@ class CarState:
     def _send(self, payload: bytes) -> None:
         self.ble.fire(self.car.send(payload))
 
-    def command_speed(self, desired: float, now: float) -> None:
+    def command_speed(self, desired: float, now: float, force: bool = False) -> None:
         factor = self.penalty_factor if now < self.penalty_until else 1.0
         if now < self.stun_until or now < self.dead_until:
             speed = 0
@@ -343,7 +347,12 @@ class CarState:
         changed = abs(speed - self._last_speed_sent) >= SPEED_SEND_MIN_DELTA
         zeroing = speed == 0 and self._last_speed_sent != 0
         stale = speed != self._last_speed_sent and now - self._last_speed_t > SPEED_KEEPALIVE_S
-        if changed or zeroing or stale:
+        # Human analog input changes the target almost every frame. A write for
+        # each change can saturate the car's BLE link, delaying its position
+        # notifications (the map then freezes for a second and jumps). Cap the
+        # rate; zeroing an emergency stop is always immediate.
+        due = force or now - self._last_speed_t >= SPEED_SEND_INTERVAL_S
+        if zeroing or ((changed or stale) and due):
             self._last_speed_sent, self._last_speed_t = speed, now
             self.ble.fire(self.car.set_speed(speed, accel))
         if speed == 0 and self.loc is not None:
@@ -351,6 +360,7 @@ class CarState:
             self.loc.filter.set_speed(0, now)
 
     def hard_stop(self, now: float) -> None:
+        self.cruise_speed = 0.0
         self._last_speed_sent, self._last_speed_t = 0, now
         self.ble.fire(self.car.set_speed(0, ACCEL_STOP))
         if self.loc is not None:
@@ -465,6 +475,10 @@ class CarState:
     def world(self) -> Optional[tuple[float, float]]:
         return self.loc.world() if self.loc else None
 
+    def render_world(self, now: float) -> Optional[tuple[float, float]]:
+        """Best current pose for the map; corrections are applied smoothly by the renderer."""
+        return self.loc.render_world(now) if self.loc else None
+
 
 class Game:
     def __init__(self, ble: BleWorker, cars: list[CarState], track: Optional[Track], ai_enabled: bool, ai_speed: Optional[int]):
@@ -556,6 +570,7 @@ class Game:
             c.grid_laps = 0
             c.grid_retry_lap = False
             c.grid_prev_index = None
+            c.cruise_speed = 0.0
             c.set_lane(c.grid_lane, now)
             c._last_lane_sent = 999.0     # force a lane command once the car is localized
             if c.car.connected and not c.charging:
@@ -724,6 +739,7 @@ class Game:
             c.ai_track_recovery = ""
             c.boost_until = 0.0
             c.boost_ready_at = now + 3.0
+            c.cruise_speed = 0.0
             if (c.grid_state == "placed" and c.map_position_known() and c.loc is not None
                     and c.loc.direction > 0 and c.loc.index == 0 and 0.5 <= c.loc.frac < 0.6):
                 # A car correctly parked on the bar starts its first timed lap at GO.
@@ -969,11 +985,18 @@ class Game:
             c.hard_stop(now)
             src.rumble(0.8, 0.8, 150)
         else:
-            cruise = src.throttle() * (1.0 - src.brake()) * c.max_speed
-            boosted = self.boost_target(c, cruise, now) if src.throttle() > 0.9 and src.brake() == 0 else cruise
-            if src.brake() > 0 or src.throttle() <= 0.9:
+            # R2/L2 (or W/S) change a held target speed. Releasing the input
+            # keeps the target, like the slider in the official app. Analog
+            # travel scales the rate, so a light touch is fine and a full pull
+            # accelerates quickly. command_speed caps the BLE write rate.
+            up = max(0.0, min(1.0, src.throttle()))
+            down = max(0.0, min(1.0, src.brake()))
+            c.cruise_speed = max(0.0, min(c.max_speed, c.cruise_speed +
+                                          (up * PLAYER_ACCEL_RATE - down * PLAYER_BRAKE_RATE) * dt))
+            if down > 0 or c.cruise_speed <= 0:
                 c.boost_until = 0.0
-            c.command_speed(boosted, now)
+            target = self.boost_target(c, c.cruise_speed, now) if c.cruise_speed > 0 else 0.0
+            c.command_speed(target, now)
         c.steer(src.steer(), dt, now)
         if src.pressed(I.LANE_LEFT):
             c.snap_lane(-1, now)

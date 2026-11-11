@@ -52,21 +52,41 @@ class BoostTests(unittest.TestCase):
         self.g.cars.append(other)
         self.assertFalse(self.g.request_boost(self.c, self.now))
 
-    def test_player_full_throttle_reaches_2000_without_changing_ai_limit(self):
+    def test_player_full_throttle_ramps_target_and_limit_clamps_it(self):
         source = Mock()
         source.pressed.return_value = False
         source.throttle.return_value, source.brake.return_value, source.steer.return_value = 1, 0, 0
         self.c.source = source
         self.c.command_speed = Mock()
-        self.g._human(self.c, 0.02, self.now)
+        for _ in range(30):
+            self.g._human(self.c, 0.1, self.now)
+        self.assertEqual(self.c.cruise_speed, 2000)
         self.c.command_speed.assert_called_with(2000, self.now)
         source.pressed.side_effect = lambda action: action == I.LIMIT_DOWN
-        self.g._human(self.c, 0.02, self.now + 1)
+        self.g._human(self.c, 0.1, self.now + 1)
+        self.assertEqual(self.c.max_speed, 1900)
+        self.assertEqual(self.c.cruise_speed, 1900)
         self.c.command_speed.assert_called_with(1900, self.now + 1)
         self.c.source = None
         self.assertEqual(self.c.max_speed, 800)
+
+    def test_player_speed_holds_when_released_and_brakes_down(self):
+        source = Mock()
+        source.pressed.return_value = False
+        source.throttle.return_value, source.brake.return_value, source.steer.return_value = 1, 0, 0
         self.c.source = source
-        self.assertEqual(self.c.max_speed, 1900)
+        self.c.command_speed = Mock()
+        self.g._human(self.c, 1.0, self.now)
+        self.assertAlmostEqual(self.c.cruise_speed, 900)
+        source.throttle.return_value = 0
+        self.c.command_speed.reset_mock()
+        self.g._human(self.c, 1.0, self.now + 1)
+        self.assertAlmostEqual(self.c.cruise_speed, 900)
+        self.c.command_speed.assert_called_with(900, self.now + 1)
+        source.brake.return_value = 1
+        self.g._human(self.c, 1.0, self.now + 2)
+        self.assertEqual(self.c.cruise_speed, 0)
+        self.c.command_speed.assert_called_with(0, self.now + 2)
 
 if __name__ == '__main__':
     unittest.main()
