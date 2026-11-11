@@ -31,7 +31,7 @@ class GridTests(unittest.TestCase):
         self.c.hard_stop.assert_not_called()
         self.c.loc.index, self.c.loc.frac = 1, 0.2
         self.g.grid_tick(0)
-        self.c.loc.index, self.c.loc.frac, self.c.loc.sub_id = 0, 0.52, 33
+        self.c.loc.index, self.c.loc.frac, self.c.loc.sub_id = 0, 0.47, 34
         self.g.grid_tick(0)
         self.assertEqual(self.c.grid_state, 'placed')
         self.c.hard_stop.assert_called_once()
@@ -69,7 +69,7 @@ class GridTests(unittest.TestCase):
         self.c.loc.on_track = False
         self.assertFalse(self.g.grid_tick(0))
         self.c.loc.on_track = True
-        self.c.loc.frac, self.c.loc.sub_id = .52, 33
+        self.c.loc.frac, self.c.loc.sub_id = .47, 34
         self.g.grid_tick(0)
         self.assertEqual(self.c.grid_state, 'placed')
         self.assertTrue(self.g.grid_tick(0))

@@ -99,7 +99,7 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
    - **RACE** (Start / Options / Space / click): enabled with at least one connected player or AI car off its charger. Leave all cars unclaimed for an AI-only race. The controllers legend and
      the "players / AI / parked" line tell you who drives what.
 3. **Starting grid**: each participant drives to the start line in its own lane (turning around first if it
-   faces the wrong way), crawls the last half piece at 200 mm/s and stops on the finish-line bar. Cars that
+   faces the wrong way), crawls the last half piece at 200 mm/s and stops just before the finish-line bar. Cars that
    overshoot the line or arrive in the wrong lane do a full lap before trying again. Missing position
    triggers repeated 1.5-second recovery bursts with 2-second pauses. Charging or disconnected cars
    remain pending. The countdown waits until every participant is ready; only parked cars are excluded.
@@ -150,9 +150,10 @@ clamped to that ceiling and the shared race limit. The limit is retained when yo
 car and does not raise its AI limit. Actual motor speed may be lower. `--player-max-speed` sets a lower
 initial limit; `--max-speed` sets the AI limit.
 
-Speed writes are capped at **10 Hz** so a car's BLE link stays free for position updates; emergency
-stops are sent immediately. This avoids the map freezing for a second and jumping when analog input
-would otherwise cause dozens of speed writes per second.
+The player ramp uses **450 mm/s²** acceleration and **900 mm/s²** braking. While moving, the target
+never drops below **300 mm/s**; this prevents the stutter and lost track codes at crawling speed.
+**B** remains the immediate emergency stop. Speed writes are capped at **20 Hz** so the ramp stays
+smooth without flooding the car's BLE link.
 
 Steering uses the four physical lane centers. A stick push changes one lane (LB/RB also snap one
 lane). Between track codes the localizer follows the car's own 0x41 current/target offsets, so it does

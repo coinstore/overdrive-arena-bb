@@ -29,9 +29,10 @@ MAX_ABS_OFFSET = 68.0
 
 SPEED_SEND_MIN_DELTA = 15
 SPEED_KEEPALIVE_S = 0.5
-SPEED_SEND_INTERVAL_S = 0.1      # cap speed writes at 10 Hz; fast enough for motor control, leaves BLE room for position fixes
-PLAYER_ACCEL_RATE = 900.0        # mm/s^2 at full R2/W; analog trigger travel scales this
-PLAYER_BRAKE_RATE = 1800.0       # mm/s^2 at full L2/S
+SPEED_SEND_INTERVAL_S = 0.05     # 20 Hz keeps the ramp smooth while still leaving BLE room for position fixes
+PLAYER_ACCEL_RATE = 450.0        # mm/s^2 at full R2/W; analog trigger travel scales this
+PLAYER_BRAKE_RATE = 900.0        # mm/s^2 at full L2/S
+MIN_PLAYER_SPEED = 300           # below this the cars stutter and miss track codes
 LANE_SEND_MIN_DELTA = 3.0
 LANE_SEND_INTERVAL_S = 0.1
 LANE_SYNC_IDLE_S = 1.5
@@ -60,7 +61,7 @@ GRID_SPEED = 320            # speed used to drive to the start line
 GRID_CRAWL = 200            # final approach speed: slow and identical for every car so they stop aligned
 GRID_RECOVERY_DRIVE_S = 1.5  # bounded slow search, followed by a pause before retrying
 GRID_RECOVERY_PAUSE_S = 2.0
-GRID_STOP_FRAC = 0.24       # stop once this far into the start piece (before the finish line at 0.5)
+GRID_STOP_MARGIN_MM = 30.0  # stop with the sensor this far before the finish-line bar
 COUNTDOWN_S = 3.0
 BOOST_DURATION_S = 0.6
 BOOST_COOLDOWN_S = 6.0
@@ -664,16 +665,18 @@ class Game:
                 c.grid_state = "driving"
                 c.command_speed(GRID_SPEED, now)
             c.apply_lane(now)
-            # stop on the finish-line bar in the middle of the start piece: it is read in every lane at the
-            # same spot and detected even at crawl speed (codes are missed often below ~250 mm/s). The same
-            # event ends a lap, so the cars park exactly where a winner stops.
+            # Stop just before the bar using the predicted position, not only when
+            # the bar code is already under the sensor. A car that crosses it does
+            # another lap instead of parking too far forward.
+            margin = GRID_STOP_MARGIN_MM / self.track.pieces[0].length_mm if self.track else 0.0
+            before_bar = loc.index == 0 and (0.5 - margin) <= loc.frac < 0.5
             on_bar = loc.index == 0 and loc.sub_id == 33 and 0.5 <= loc.frac < 0.6
             overshot = (loc.index == 0 and loc.frac >= 0.6) or (previous_index == 0 and loc.index != 0)
-            if on_bar and in_lane:
+            if before_bar and in_lane:
                 c.hard_stop(now)
                 c.grid_state = "placed"
-                self.log(f"{c.name} on the start line (lane {lane_now:+.0f})", c.color)
-            elif on_bar or overshot:
+                self.log(f"{c.name} just before the start line (lane {lane_now:+.0f})", c.color)
+            elif before_bar or on_bar or overshot:
                 c.grid_laps += 1
                 c.grid_retry_lap = True
                 c.grid_state = "retry lap"
@@ -1008,8 +1011,11 @@ class Game:
             # accelerates quickly. command_speed caps the BLE write rate.
             up = max(0.0, min(1.0, src.throttle()))
             down = max(0.0, min(1.0, src.brake()))
+            was_moving = c.cruise_speed > 0
             c.cruise_speed = max(0.0, min(c.max_speed, c.cruise_speed +
                                           (up * PLAYER_ACCEL_RATE - down * PLAYER_BRAKE_RATE) * dt))
+            if c.cruise_speed > 0 or (was_moving and down > 0):
+                c.cruise_speed = max(c.cruise_speed, min(MIN_PLAYER_SPEED, c.max_speed))
             if down > 0 or c.cruise_speed <= 0:
                 c.boost_until = 0.0
             target = self.boost_target(c, c.cruise_speed, now) if c.cruise_speed > 0 else 0.0

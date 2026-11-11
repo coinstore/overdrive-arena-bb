@@ -58,7 +58,7 @@ class BoostTests(unittest.TestCase):
         source.throttle.return_value, source.brake.return_value, source.steer.return_value = 1, 0, 0
         self.c.source = source
         self.c.command_speed = Mock()
-        for _ in range(30):
+        for _ in range(50):
             self.g._human(self.c, 0.1, self.now)
         self.assertEqual(self.c.cruise_speed, 2000)
         self.c.command_speed.assert_called_with(2000, self.now)
@@ -77,16 +77,16 @@ class BoostTests(unittest.TestCase):
         self.c.source = source
         self.c.command_speed = Mock()
         self.g._human(self.c, 1.0, self.now)
-        self.assertAlmostEqual(self.c.cruise_speed, 900)
+        self.assertAlmostEqual(self.c.cruise_speed, 450)
         source.throttle.return_value = 0
         self.c.command_speed.reset_mock()
         self.g._human(self.c, 1.0, self.now + 1)
-        self.assertAlmostEqual(self.c.cruise_speed, 900)
-        self.c.command_speed.assert_called_with(900, self.now + 1)
+        self.assertAlmostEqual(self.c.cruise_speed, 450)
+        self.c.command_speed.assert_called_with(450, self.now + 1)
         source.brake.return_value = 1
         self.g._human(self.c, 1.0, self.now + 2)
-        self.assertEqual(self.c.cruise_speed, 0)
-        self.c.command_speed.assert_called_with(0, self.now + 2)
+        self.assertEqual(self.c.cruise_speed, 300)
+        self.c.command_speed.assert_called_with(300, self.now + 2)
 
 if __name__ == '__main__':
     unittest.main()
