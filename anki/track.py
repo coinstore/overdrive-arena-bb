@@ -31,6 +31,9 @@ DATA_FILE = Path(__file__).parent / "data" / "offsetInfo.json"
 # tuned on real hardware via the environment.
 RENDER_RAW = os.environ.get("ARENA_RENDER_RAW", "1") != "0"
 RENDER_LEAD_S = float(os.environ.get("ARENA_RENDER_LEAD", "0.0"))
+LANE_MODEL_ENABLED = os.environ.get("ARENA_LANE_MODEL", "1") != "0"
+LANE_MODEL_DELAY_S = float(os.environ.get("ARENA_LANE_MODEL_DELAY", "0.08"))
+MAX_RENDER_BACKWARD_MM = float(os.environ.get("ARENA_RENDER_BACKWARD", "250"))
 
 CELL_MM = 560.0                       # one straight piece
 CURVE_RADIUS_MM = CELL_MM / 2         # centerline radius, measured from wheel travel (~280 mm)
@@ -437,7 +440,13 @@ class CarLocalizer:
         self.track = track
         self.index: Optional[int] = None    # piece index
         self.frac = 0.0                     # fraction along the piece, in track-forward terms
-        self.lane_mm = 0.0                  # lateral offset in track-forward terms (negative = left)
+        self.lane_mm = 0.0                  # estimated lateral offset in track-forward terms (negative = left)
+        self.code_lane_mm: Optional[float] = None  # last lane read from a track code (authoritative for control)
+        self._lane_from = 0.0
+        self._lane_to = 0.0
+        self._lane_t0 = 0.0
+        self._lane_speed = 0.0
+        self._lane_active = False
         self.direction = 1                  # +1 driving with the track's forward direction, -1 against
         self.speed = 0.0
         self.sub_id: Optional[int] = None   # 34 / 33 while on the start piece
@@ -575,7 +584,13 @@ class CarLocalizer:
         else:
             self.sub_id = None
         self.frac = frac
-        self.lane_mm = lane_car if self.direction > 0 else -lane_car
+        self.code_lane_mm = lane_car if self.direction > 0 else -lane_car
+        self.lane_mm = self.code_lane_mm
+        if self._lane_active:
+            self._lane_from = self.code_lane_mm
+            self._lane_t0 = now
+            if abs(self._lane_to - self.code_lane_mm) < 0.5:
+                self._lane_active = False
         self._code_pose = self.index, self.frac, self.sub_id
 
     def _on_transition(self, _tr: P.TransitionUpdate, now: Optional[float] = None) -> None:
@@ -641,12 +656,43 @@ class CarLocalizer:
         self.motion_samples.append((projected, sample_time, self.route_epoch))
         return projected
 
+    def begin_lane_change(self, target_car: float, now: float, speed_mm_s: float) -> None:
+        """Model the commanded lane change until the next track code confirms it."""
+        if self.index is None:
+            return
+        target = max(-P.MAX_ABS_OFFSET, min(P.MAX_ABS_OFFSET, target_car * self.direction))
+        self._lane_from = self.lane_mm
+        self._lane_to = target
+        self._lane_t0 = now + LANE_MODEL_DELAY_S
+        self._lane_speed = max(1.0, float(speed_mm_s))
+        self._lane_active = LANE_MODEL_ENABLED and abs(target - self.lane_mm) > 0.5
+
+    def _update_lane_model(self, now: float) -> None:
+        if not self._lane_active:
+            return
+        elapsed = now - self._lane_t0
+        if elapsed <= 0:
+            return
+        span = self._lane_to - self._lane_from
+        if abs(span) <= 0.5:
+            self._lane_active = False
+            return
+        step = self._lane_speed * elapsed
+        if step >= abs(span):
+            self.lane_mm = self._lane_to
+            self._lane_active = False
+        else:
+            self.lane_mm = self._lane_from + math.copysign(step, span)
+        self.filter.lane = self.lane_mm
+
     def advance(self, dt: float, now: Optional[float] = None) -> None:
         if not self.on_track:
             return
+        now = now if now is not None else self._prediction_t + max(0.0, dt)
+        self._update_lane_model(now)
         if self.filter.position is not None:
-            self._prediction_t = now if now is not None else self._prediction_t + max(0.0, dt)
-            projected = self._publish_progress(self._prediction_t)
+            self._prediction_t = now
+            projected = self._publish_progress(now)
             self.index, self.frac = self.filter.pose(projected)
             return
         if self.index is None or self.speed <= 0:
@@ -677,6 +723,14 @@ class CarLocalizer:
             distance = self.filter.predict(now + lead)
             if distance is None:
                 return None
+            # Do not let one bad fix throw the sprite far backwards; the
+            # internal lap/weapon estimate is untouched and the next good fix
+            # still corrects it. Small corrections remain fully visible.
+            if self._display_distance is not None:
+                if self.direction > 0:
+                    distance = max(distance, self._display_distance - MAX_RENDER_BACKWARD_MM)
+                else:
+                    distance = min(distance, self._display_distance + MAX_RENDER_BACKWARD_MM)
             index, frac = self.filter.pose(distance)
             return self.track.world_point(index, frac, self.lane_mm)
         if lead:

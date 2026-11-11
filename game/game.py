@@ -35,7 +35,7 @@ PLAYER_BRAKE_RATE = 1800.0       # mm/s^2 at full L2/S
 LANE_SEND_MIN_DELTA = 3.0
 LANE_SEND_INTERVAL_S = 0.1
 LANE_SYNC_IDLE_S = 1.5
-STEER_RATE_MM_S = 120.0
+STEER_LANE_THRESHOLD = 0.5   # stick deflection that requests the next lane; one step per push
 # gentle acceleration: hard motor current on tired batteries browns out the BLE radio (cars reboot)
 ACCEL_UP = 600
 ACCEL_DOWN = 1500
@@ -201,7 +201,8 @@ class CarState:
         self._last_steer_t = 0.0
         self._last_offset_told = 0.0
         self._lane_retry_t = 0.0
-        self.desired_lane: Optional[float] = None   # sticky lane goal (snap / AI / grid); None while steering freely
+        self._steer_dir = 0                 # last stick direction; one lane step per push
+        self.desired_lane: Optional[float] = None   # sticky lane goal (snap / AI / grid)
 
     # ---- identity ----
     @property
@@ -371,10 +372,14 @@ class CarState:
         return self.source is not None or self.ai
 
     def steer(self, amount: float, dt: float, now: float) -> None:
-        if amount:
-            self.target_offset += amount * STEER_RATE_MM_S * dt
-            self._last_steer_t = now
-            self.desired_lane = None
+        """Human steering: one discrete lane step per stick push, not an analog offset."""
+        direction = 1 if amount > STEER_LANE_THRESHOLD else (-1 if amount < -STEER_LANE_THRESHOLD else 0)
+        if direction == 0:
+            self._steer_dir = 0
+            return
+        if direction != self._steer_dir:
+            self._steer_dir = direction
+            self.snap_lane(direction, now)
 
     def snap_lane(self, direction: int, now: float) -> None:
         if direction < 0:
@@ -393,10 +398,11 @@ class CarState:
         self._last_steer_t = now
 
     def actual_lane(self) -> Optional[float]:
-        """Lane read from the track codes, in the car's own left/right frame."""
+        """Lane confirmed by the track codes, in the car's own left/right frame."""
         if not self.localized() or self.loc is None:
             return None
-        return max(-MAX_ABS_OFFSET, min(MAX_ABS_OFFSET, self.loc.lane_mm * self.loc.direction))
+        lane = self.loc.code_lane_mm if self.loc.code_lane_mm is not None else self.loc.lane_mm
+        return max(-MAX_ABS_OFFSET, min(MAX_ABS_OFFSET, lane * self.loc.direction))
 
     def _tell_offset(self, lane_car: float) -> None:
         self._last_offset_told = lane_car
@@ -412,7 +418,10 @@ class CarState:
         if abs(self.target_offset - self._last_lane_sent) >= LANE_SEND_MIN_DELTA and now - self._last_lane_t > LANE_SEND_INTERVAL_S:
             if lane_car is not None and abs(lane_car - self._last_offset_told) > 6 and now - self._last_lane_t > 0.8:
                 self._tell_offset(lane_car)
-            self.ble.fire(self.car.change_lane(self.target_offset, h_speed=250 if steering else 400, h_accel=1500))
+            h_speed = 250 if steering else 400
+            self.ble.fire(self.car.change_lane(self.target_offset, h_speed=h_speed, h_accel=1500))
+            if self.loc is not None:
+                self.loc.begin_lane_change(self.target_offset, now, h_speed)
             self._last_lane_sent, self._last_lane_t = self.target_offset, now
             return
         idle = now - self._last_steer_t > LANE_SYNC_IDLE_S and now - self._last_lane_t > LANE_SYNC_IDLE_S
@@ -422,6 +431,8 @@ class CarState:
             # settled in the wrong lane: correct the car's belief and ask again
             self._tell_offset(lane_car)
             self.ble.fire(self.car.change_lane(self.desired_lane, h_speed=400, h_accel=1500))
+            if self.loc is not None:
+                self.loc.begin_lane_change(self.desired_lane, now, 400)
             self.target_offset = self._last_lane_sent = self.desired_lane
             self._last_lane_t = self._lane_retry_t = now
             return

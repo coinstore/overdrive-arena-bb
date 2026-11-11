@@ -5,7 +5,7 @@ Flow:  connect to every car  ->  PAIRING screen (claim a car per controller, sca
        ->  RACE (Back/Esc returns to pairing)
 
 Gamepad (Xbox names; PS5: Cross=A, Circle=B, Square=X, Triangle=Y, Share=Back, Options=Start):
-  RT / LT             accelerate / decelerate   Left stick X   steer between lanes
+  RT / LT             accelerate / decelerate   Left stick X   change lane (4 lanes)
                       (releasing holds speed)  D-pad up/down  speed limit +/- 100
   LB / RB, D-pad L/R  snap one lane
   X                   fire blaster              Y              drop mine (pairing: scan track)
