@@ -155,9 +155,8 @@ stops are sent immediately. This avoids the map freezing for a second and jumpin
 would otherwise cause dozens of speed writes per second.
 
 Steering uses the four physical lane centers. A stick push changes one lane (LB/RB also snap one
-lane). Between track codes the localizer models the commanded lane change and re-anchors on the car's
-0x41 current/target offsets, so it does not have to wait for the next code; the next code remains
-authoritative and corrects the estimate.
+lane). Between track codes the localizer follows the car's own 0x41 current/target offsets, so it does
+not wait for the next code; the next code remains authoritative and corrects the estimate.
 
 **Left-stick click / Left Shift** requests a 0.6-second straight boost, with a 6-second cooldown.
 Hard and Extreme AI use it automatically when possible. The boost ceiling is 150% of the normal limit,

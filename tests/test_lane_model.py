@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from anki.track import CarLocalizer, Piece, Track, START, STRAIGHT, LANE_MODEL_ENABLED
+from anki.track import CarLocalizer, Piece, Track, START, STRAIGHT, LANE_FEEDBACK_ENABLED
 from game.game import CarState
 
 
@@ -35,7 +35,7 @@ class LaneSteeringTests(unittest.TestCase):
         self.assertEqual(self.car.actual_lane(), 23.0)
 
 
-class LaneModelTests(unittest.TestCase):
+class LaneFeedbackTests(unittest.TestCase):
     def setUp(self):
         self.track = Track([Piece(34, START), Piece(36, STRAIGHT)])
         self.loc = CarLocalizer(self.track)
@@ -44,32 +44,22 @@ class LaneModelTests(unittest.TestCase):
         self.loc.frac = 0.1
         self.now = time.monotonic()
 
-    @unittest.skipUnless(LANE_MODEL_ENABLED, "lane model disabled")
-    def test_model_moves_toward_command_and_stops_at_target(self):
-        self.loc.lane_mm = 0.0
-        self.loc.begin_lane_change(68.0, self.now, 400)
-        self.loc.advance(0.1, self.now + 0.1)
-        self.assertGreater(self.loc.lane_mm, 0.0)
-        self.assertLess(self.loc.lane_mm, 68.0)
-        self.loc.advance(0.1, self.now + 0.3)
-        self.assertEqual(self.loc.lane_mm, 68.0)
-        self.assertFalse(self.loc._lane_active)
-
-    @unittest.skipUnless(LANE_MODEL_ENABLED, "lane model disabled")
-    def test_lane_update_reanchors_and_stops_at_target(self):
+    @unittest.skipUnless(LANE_FEEDBACK_ENABLED, "lane feedback disabled")
+    def test_feedback_sets_current_and_stops_at_target(self):
         self.loc.lane_mm = -23.0
-        self.loc.on_lane_update(-23.0, 68.0, self.now)
+        self.loc.begin_lane_change(-68.0, self.now)
+        self.loc.on_lane_update(-22.5, -67.5)
+        self.assertEqual(self.loc.lane_mm, -22.5)
         self.assertTrue(self.loc._lane_active)
-        self.loc.advance(0.1, self.now + 0.1)
-        self.assertGreater(self.loc.lane_mm, -23.0)
-        self.loc.on_lane_update(68.0, 68.0, self.now + 0.5)
-        self.assertEqual(self.loc.lane_mm, 68.0)
+        self.loc.on_lane_update(-67.5, -67.5)
+        self.assertEqual(self.loc.lane_mm, -67.5)
         self.assertFalse(self.loc._lane_active)
 
     def test_stationary_lane_status_does_not_overwrite_code_lane(self):
         self.loc.lane_mm = 23.0
-        self.loc.on_lane_update(0.0, 0.0, self.now)
+        self.loc.on_lane_update(0.0, 0.0)
         self.assertEqual(self.loc.lane_mm, 23.0)
+
 
 
 if __name__ == "__main__":

@@ -288,7 +288,7 @@ class CarState:
             if (msg_id == P.MSG_LANE_CHANGE_UPDATE and isinstance(decoded, dict)
                     and "offset_mm" in decoded and "target_mm" in decoded):
                 self.loc.on_lane_update(float(decoded["offset_mm"]),
-                                        float(decoded["target_mm"]), received_at)
+                                        float(decoded["target_mm"]))
             if msg_id == P.MSG_LOCALIZATION_POSITION_UPDATE and self.loc.direction < 0:
                 self._reverse_reports += 1
         if self.extra_listener is not None:
@@ -427,7 +427,7 @@ class CarState:
             h_speed = 250 if steering else 400
             self.ble.fire(self.car.change_lane(self.target_offset, h_speed=h_speed, h_accel=1500))
             if self.loc is not None:
-                self.loc.begin_lane_change(self.target_offset, now, h_speed)
+                self.loc.begin_lane_change(self.target_offset, now)
             self._last_lane_sent, self._last_lane_t = self.target_offset, now
             return
         idle = now - self._last_steer_t > LANE_SYNC_IDLE_S and now - self._last_lane_t > LANE_SYNC_IDLE_S
@@ -438,7 +438,7 @@ class CarState:
             self._tell_offset(lane_car)
             self.ble.fire(self.car.change_lane(self.desired_lane, h_speed=400, h_accel=1500))
             if self.loc is not None:
-                self.loc.begin_lane_change(self.desired_lane, now, 400)
+                self.loc.begin_lane_change(self.desired_lane, now)
             self.target_offset = self._last_lane_sent = self.desired_lane
             self._last_lane_t = self._lane_retry_t = now
             return
