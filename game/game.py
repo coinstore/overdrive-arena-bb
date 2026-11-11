@@ -124,6 +124,7 @@ class CarState:
         self.loc: Optional[CarLocalizer] = None
         self.extra_listener = None          # e.g. the track scanner while scanning
         self._messages = SimpleQueue()
+        self.position_lead_s = 0.0          # BLE position measurements are older than their arrival
         self.last_radio_t = 0.0
         self._last_motion_t = float("-inf")
         self.message_delay_s = 0.0
@@ -282,7 +283,12 @@ class CarState:
             self.loc.speed = float(decoded.actual_mm_s)
             self.loc.filter.set_speed(self.loc.direction * self.loc.speed, received_at)
         if self.loc is not None:
-            self.loc.on_message(msg_id, decoded, received_at=received_at)
+            self.loc.on_message(msg_id, decoded, received_at=received_at,
+                                measurement_delay=self.position_lead_s)
+            if (msg_id == P.MSG_LANE_CHANGE_UPDATE and isinstance(decoded, dict)
+                    and "offset_mm" in decoded and "target_mm" in decoded):
+                self.loc.on_lane_update(float(decoded["offset_mm"]),
+                                        float(decoded["target_mm"]), received_at)
             if msg_id == P.MSG_LOCALIZATION_POSITION_UPDATE and self.loc.direction < 0:
                 self._reverse_reports += 1
         if self.extra_listener is not None:

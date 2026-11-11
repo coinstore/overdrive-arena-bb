@@ -234,6 +234,9 @@ def parse(data: bytes) -> tuple[int, object]:
             return msg_id, "delocalized"
         if msg_id == MSG_OFFSET_FROM_ROAD_CENTER_UPDATE and len(body) >= 4:
             return msg_id, {"offset_mm": struct.unpack_from("<f", body)[0]}
+        if msg_id == MSG_LANE_CHANGE_UPDATE and len(body) >= 8:
+            current, target = struct.unpack_from("<ff", body, 0)
+            return msg_id, {"offset_mm": current, "target_mm": target}
         if msg_id == MSG_STATUS_UPDATE and len(body) >= 4:
             return msg_id, VehicleStatus(bool(body[0] & 1), bool(body[1] & 1), bool(body[2] & 1), bool(body[3] & 1))
         if msg_id == MSG_SPEED_UPDATE and len(body) >= 6:

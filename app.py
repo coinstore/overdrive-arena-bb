@@ -41,6 +41,7 @@ from game.records import Records
 log = logging.getLogger("app")
 
 TICK_HZ = 50
+POSITION_LEAD_S = float(os.environ.get("ARENA_POSITION_LEAD", "0.03"))  # measured ping RTT/2 is ~27 ms
 TRACK_FILE = Path(__file__).parent / "track.json"
 SCAN_SPEED = 450
 SCAN_SPEEDS = (450, 500, 400)
@@ -127,6 +128,7 @@ class App:
             return False
         for i, v in enumerate(vehicles):
             cs = CarState(v, i, self.ble, self.args.max_speed if self.args.max_speed is not None else 800)
+            cs.position_lead_s = POSITION_LEAD_S
             cs.player_max_speed = self.args.player_max_speed
             cs.ai_difficulty = self.args.ai_difficulty
             cs.extreme_max_speed = self.args.max_speed if self.args.max_speed is not None else 2000

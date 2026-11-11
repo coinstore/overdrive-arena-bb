@@ -112,8 +112,9 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
 BLE notifications are timestamped on arrival, before parsing or queueing. Position fixes are applied at
 that time and projected to the current frame; older out-of-order motion updates are ignored. The map
 renders the filter's current estimate with a short visual interpolation, so small backward corrections
-blend in instead of making the sprite jump or stand still. The firmware's position packet has no device
-timestamp, so this compensates app queue delays, not radio transit time.
+blend in instead of making the sprite jump or stand still. A 30 ms position lead (the measured BLE
+ping RTT is about 55 ms, so half is one hop) keeps the internal estimate aligned with the car; the
+firmware's position packet has no device timestamp, so this is a calibrated approximation.
 
 The lap counter uses one continuous, unwrapped route estimate. Every update and frame prediction is kept
 in timestamp order, so a forward circuit completes a lap even if the finish codes were missed or several
@@ -154,8 +155,9 @@ stops are sent immediately. This avoids the map freezing for a second and jumpin
 would otherwise cause dozens of speed writes per second.
 
 Steering uses the four physical lane centers. A stick push changes one lane (LB/RB also snap one
-lane). Between track codes the localizer models the commanded lane change, so the map does not have
-to wait for the next code; the next code remains authoritative and corrects the estimate.
+lane). Between track codes the localizer models the commanded lane change and re-anchors on the car's
+0x41 current/target offsets, so it does not have to wait for the next code; the next code remains
+authoritative and corrects the estimate.
 
 **Left-stick click / Left Shift** requests a 0.6-second straight boost, with a 6-second cooldown.
 Hard and Extreme AI use it automatically when possible. The boost ceiling is 150% of the normal limit,

@@ -464,21 +464,26 @@ class CarLocalizer:
         self.motion_samples = deque(maxlen=4096)
 
     # ---- message handling (drained in arrival order on the game thread) ----
-    def on_message(self, msg_id: int, decoded, received_at: Optional[float] = None) -> None:
+    def on_message(self, msg_id: int, decoded, received_at: Optional[float] = None,
+                   measurement_delay: float = 0.0) -> None:
         now = time.monotonic() if received_at is None else received_at
         if msg_id not in (P.MSG_LOCALIZATION_POSITION_UPDATE, P.MSG_LOCALIZATION_TRANSITION_UPDATE,
                           P.MSG_VEHICLE_DELOCALIZED):
             return
-        if self.filter.position is not None and now < self.filter.last_fix:
+        # A notification is timestamped on arrival; the car measured its
+        # position one BLE hop earlier. Apply the fix at that earlier time and
+        # project it forward to the arrival/current frame.
+        fix_time = now - max(0.0, measurement_delay)
+        if self.filter.position is not None and fix_time < self.filter.last_fix:
             return  # an old notification must not rewind the estimator
         if self._sensor_pose is not None:
             self.index, self.frac, self.sub_id = self._sensor_pose
         was_on_track, old_direction = self.on_track, self.direction
         self._fixed = False
         if msg_id == P.MSG_LOCALIZATION_POSITION_UPDATE and isinstance(decoded, P.PositionUpdate):
-            self._on_position(decoded, now)
+            self._on_position(decoded, fix_time)
         elif msg_id == P.MSG_LOCALIZATION_TRANSITION_UPDATE and isinstance(decoded, P.TransitionUpdate):
-            self._on_transition(decoded, now)
+            self._on_transition(decoded, fix_time)
         elif msg_id == P.MSG_VEHICLE_DELOCALIZED:
             self.on_track = False
             self._sensor_pose = self._code_pose = None
@@ -491,13 +496,15 @@ class CarLocalizer:
         if self.index is not None and self._fixed:
             self._sensor_pose = self.index, self.frac, self.sub_id
             self.filter.observe(self.index, self.frac, self.direction * self.speed,
-                                        self.lane_mm, now,
+                                        self.lane_mm, fix_time,
                                         reset=not was_on_track or old_direction != self.direction,
                                         noise=15.0 if msg_id == P.MSG_LOCALIZATION_TRANSITION_UPDATE else 45.0)
             if not was_on_track or old_direction != self.direction:
                 self._display_distance = None
                 self._display_time = None
                 self.route_epoch += 1
+            # Freshness/age in the HUD uses arrival, not the measurement time.
+            self.last_update = now
             self._prediction_t = now
             self._publish_progress(now)
 
@@ -666,6 +673,23 @@ class CarLocalizer:
         self._lane_t0 = now + LANE_MODEL_DELAY_S
         self._lane_speed = max(1.0, float(speed_mm_s))
         self._lane_active = LANE_MODEL_ENABLED and abs(target - self.lane_mm) > 0.5
+
+    def on_lane_update(self, offset_car: float, target_car: float, now: float) -> None:
+        """Re-anchor the lane estimate on the car's own 0x41 current/target offsets."""
+        if not self.on_track or self.index is None:
+            return
+        current = max(-P.MAX_ABS_OFFSET, min(P.MAX_ABS_OFFSET, offset_car * self.direction))
+        target = max(-P.MAX_ABS_OFFSET, min(P.MAX_ABS_OFFSET, target_car * self.direction))
+        if abs(target - current) <= 0.5 and not self._lane_active:
+            return  # a stationary status message must not overwrite the code-confirmed lane
+        self.lane_mm = current
+        self._lane_from = current
+        self._lane_to = target
+        self._lane_t0 = now
+        if self._lane_speed <= 0:
+            self._lane_speed = 250.0
+        self._lane_active = LANE_MODEL_ENABLED and abs(target - current) > 0.5
+        self.filter.lane = self.lane_mm
 
     def _update_lane_model(self, now: float) -> None:
         if not self._lane_active:

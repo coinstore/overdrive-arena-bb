@@ -55,6 +55,22 @@ class LaneModelTests(unittest.TestCase):
         self.assertEqual(self.loc.lane_mm, 68.0)
         self.assertFalse(self.loc._lane_active)
 
+    @unittest.skipUnless(LANE_MODEL_ENABLED, "lane model disabled")
+    def test_lane_update_reanchors_and_stops_at_target(self):
+        self.loc.lane_mm = -23.0
+        self.loc.on_lane_update(-23.0, 68.0, self.now)
+        self.assertTrue(self.loc._lane_active)
+        self.loc.advance(0.1, self.now + 0.1)
+        self.assertGreater(self.loc.lane_mm, -23.0)
+        self.loc.on_lane_update(68.0, 68.0, self.now + 0.5)
+        self.assertEqual(self.loc.lane_mm, 68.0)
+        self.assertFalse(self.loc._lane_active)
+
+    def test_stationary_lane_status_does_not_overwrite_code_lane(self):
+        self.loc.lane_mm = 23.0
+        self.loc.on_lane_update(0.0, 0.0, self.now)
+        self.assertEqual(self.loc.lane_mm, 23.0)
+
 
 if __name__ == "__main__":
     unittest.main()
