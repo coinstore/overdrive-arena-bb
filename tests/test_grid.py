@@ -31,7 +31,9 @@ class GridTests(unittest.TestCase):
         self.c.hard_stop.assert_not_called()
         self.c.loc.index, self.c.loc.frac = 1, 0.2
         self.g.grid_tick(0)
-        self.c.loc.index, self.c.loc.frac, self.c.loc.sub_id = 0, 0.47, 34
+        self.c.loc.index, self.c.loc.frac = 0, 0.1
+        self.g.grid_tick(0)
+        self.c.loc.index, self.c.loc.frac, self.c.loc.sub_id = 0, 0.4167, 34
         self.g.grid_tick(0)
         self.assertEqual(self.c.grid_state, 'placed')
         self.c.hard_stop.assert_called_once()
@@ -69,10 +71,30 @@ class GridTests(unittest.TestCase):
         self.c.loc.on_track = False
         self.assertFalse(self.g.grid_tick(0))
         self.c.loc.on_track = True
-        self.c.loc.frac, self.c.loc.sub_id = .47, 34
+        self.c.loc.frac, self.c.loc.sub_id = .4167, 34
         self.g.grid_tick(0)
         self.assertEqual(self.c.grid_state, 'placed')
         self.assertTrue(self.g.grid_tick(0))
+
+    def test_accepts_a_free_lane_instead_of_another_full_lap(self):
+        self.c.loc.lane_mm = -68
+        self.c.loc.frac, self.c.loc.sub_id = 0.4167, 34
+        self.g.grid_tick(0)
+        self.assertEqual(self.c.grid_state, 'placed')
+        self.assertEqual(self.c.grid_lane, -68)
+
+    def test_does_not_share_a_lane_with_a_placed_car(self):
+        other = SimpleNamespace(loc=None, grid_state='placed', grid_lane=-68, actual_lane=lambda: -68,
+                                participates=lambda: True, command_speed=lambda *a: None,
+                                car=SimpleNamespace(connected=True), charging=False)
+        self.g.cars.append(other)
+        self.c.loc.lane_mm = -68
+        self.c.loc.frac, self.c.loc.sub_id = 0.4167, 34
+        self.g.grid_tick(0)
+        self.assertEqual(self.c.grid_state, 'driving')
+        self.c.loc.frac, self.c.loc.sub_id = 0.52, 33
+        self.g.grid_tick(0)
+        self.assertEqual(self.c.grid_state, 'retry lap')
 
     def test_only_parked_car_is_excluded(self):
         self.c.ai = False
@@ -87,14 +109,6 @@ class GridTests(unittest.TestCase):
         self.c.car.on_charger = True
         self.assertFalse(self.g.grid_tick(0))
         self.assertEqual(self.c.grid_state, 'waiting for charger removal')
-
-    def test_wrong_lane_also_requires_full_retry(self):
-        self.c.loc.lane_mm = -68
-        self.c.loc.frac, self.c.loc.sub_id = 0.52, 33
-        for _ in range(10):
-            self.g.grid_tick(0)
-        self.assertEqual(self.c.grid_laps, 1)
-        self.assertEqual(self.c.grid_state, 'retry lap')
 
 if __name__ == '__main__':
     unittest.main()

@@ -13,7 +13,7 @@ from typing import Optional
 
 from anki import protocol as P
 from anki.ble_worker import BleWorker
-from anki.track import CarLocalizer, Track, STRAIGHT, START, CRISSCROSS, TURN
+from anki.track import CarLocalizer, Track, STRAIGHT, START, CRISSCROSS, TURN, START_ID, FINISH_ID
 from anki.vehicle import Vehicle
 from . import inputs as I
 from .battery import BatteryMonitor
@@ -26,6 +26,17 @@ PLAYER_COLORS = [(255, 90, 90), (90, 190, 255), (120, 240, 120), (255, 220, 90),
 ENGINE_COLORS = [(14, 0, 0), (0, 4, 14), (0, 14, 0), (14, 10, 0), (12, 0, 14), (14, 5, 0)]
 LANES = (-68.0, -23.0, 23.0, 68.0)
 MAX_ABS_OFFSET = 68.0
+
+
+def grid_lane_order(count: int) -> tuple[float, ...]:
+    """Spread fewer cars across the available lanes so their bodies do not touch."""
+    if count <= 1:
+        return (LANES[1],)
+    if count == 2:
+        return (LANES[0], LANES[2])
+    if count == 3:
+        return (LANES[0], LANES[2], LANES[3])
+    return LANES
 
 SPEED_SEND_MIN_DELTA = 15
 SPEED_KEEPALIVE_S = 0.5
@@ -58,10 +69,12 @@ MINE_LANE_MM = 35.0
 MINE_ARM_S = 1.0
 DEATH_STOP_S = 3.0
 GRID_SPEED = 320            # speed used to drive to the start line
-GRID_CRAWL = 200            # final approach speed: slow and identical for every car so they stop aligned
+GRID_RETRY_SPEED = 500      # a missed grid attempt costs a full lap; still quick, but lane changes stay reliable
+GRID_APPROACH_FRAC = 0.0    # crawl from the start of the last piece, so deceleration is early and even
+GRID_CRAWL = 250            # low, but still reads the middle start code reliably
 GRID_RECOVERY_DRIVE_S = 1.5  # bounded slow search, followed by a pause before retrying
 GRID_RECOVERY_PAUSE_S = 2.0
-GRID_STOP_MARGIN_MM = 30.0  # stop with the sensor this far before the finish-line bar
+
 COUNTDOWN_S = 3.0
 BOOST_DURATION_S = 0.6
 BOOST_COOLDOWN_S = 6.0
@@ -367,10 +380,10 @@ class CarState:
             self.loc.speed = 0.0
             self.loc.filter.set_speed(0, now)
 
-    def hard_stop(self, now: float) -> None:
+    def hard_stop(self, now: float, accel: int = ACCEL_STOP) -> None:
         self.cruise_speed = 0.0
         self._last_speed_sent, self._last_speed_t = 0, now
-        self.ble.fire(self.car.set_speed(0, ACCEL_STOP))
+        self.ble.fire(self.car.set_speed(0, accel))
         if self.loc is not None:
             self.loc.speed = 0.0
             self.loc.filter.set_speed(0, now)
@@ -571,6 +584,8 @@ class Game:
         self.phase = "grid"
         self.running = False
         self.update_fair_penalties()
+        participants = sum(1 for c in self.cars if c.participates() and self.track is not None)
+        lane_order = grid_lane_order(participants)
         lane_i = 0
         for c in self.cars:
             c.lights_idle()
@@ -578,7 +593,7 @@ class Game:
                 c.grid_state = ""
                 c.hard_stop(now)
                 continue
-            c.grid_lane = LANES[lane_i % len(LANES)]
+            c.grid_lane = lane_order[lane_i % len(lane_order)]
             lane_i += 1
             c.grid_state = "driving"
             c.grid_t0 = now
@@ -646,18 +661,21 @@ class Game:
                 c.command_speed(GRID_SPEED, now)
                 continue
             if c.grid_retry_lap:
-                if loc.index != 0:
+                n = len(self.track.pieces) if self.track else 1
+                approaching = (loc.index == n - 1 and loc.frac > GRID_APPROACH_FRAC) or (loc.index == 0 and loc.frac < 0.4)
+                if approaching:
                     c.grid_retry_lap = False
-                c.grid_state = "retry lap"
-                c.command_speed(GRID_SPEED, now)
-                c.apply_lane(now)
-                continue
+                else:
+                    c.grid_state = "retry lap"
+                    c.command_speed(GRID_RETRY_SPEED, now)
+                    c.apply_lane(now)
+                    continue
             n = len(self.track.pieces) if self.track else 1
             lane_now = c.actual_lane()
-            in_lane = lane_now is not None and abs(lane_now - c.grid_lane) <= 15
-            # final approach: crawl from the second half of the last piece so every car enters the start
-            # piece at the same slow speed, then stop on the first code of the start piece (same spot in every lane)
-            approaching = (loc.index == n - 1 and loc.frac > 0.5) or (loc.index == 0 and loc.frac < 0.8)
+            in_lane = self._grid_lane_ok(c, lane_now)
+            # final approach: crawl from the start of the last piece so the cars slow down early
+            # and enter the start piece slowly; the middle start code then triggers the stop
+            approaching = (loc.index == n - 1 and loc.frac > GRID_APPROACH_FRAC) or (loc.index == 0 and loc.frac < 0.8)
             if approaching and in_lane:
                 c.grid_state = "approach"
                 c.command_speed(GRID_CRAWL, now)
@@ -665,25 +683,58 @@ class Game:
                 c.grid_state = "driving"
                 c.command_speed(GRID_SPEED, now)
             c.apply_lane(now)
-            # Stop just before the bar using the predicted position, not only when
-            # the bar code is already under the sensor. A car that crosses it does
-            # another lap instead of parking too far forward.
-            margin = GRID_STOP_MARGIN_MM / self.track.pieces[0].length_mm if self.track else 0.0
-            before_bar = loc.index == 0 and (0.5 - margin) <= loc.frac < 0.5
-            on_bar = loc.index == 0 and loc.sub_id == 33 and 0.5 <= loc.frac < 0.6
+            # The last code of the pre-finish half is read in every lane at the same
+            # physical longitudinal position. Stop right on it.
+            marker_frac = 0.4167
+            on_marker = (loc.index == 0 and loc.sub_id == START_ID
+                         and marker_frac - 0.02 <= loc.frac < marker_frac + 0.04)
+            on_bar = loc.index == 0 and loc.sub_id == FINISH_ID and 0.5 <= loc.frac < 0.6
             overshot = (loc.index == 0 and loc.frac >= 0.6) or (previous_index == 0 and loc.index != 0)
-            if before_bar and in_lane:
+            if on_marker and in_lane:
                 c.hard_stop(now)
+                loc.frac, loc.sub_id = marker_frac, START_ID
+                loc.filter.position = loc.filter.distance(0, marker_frac)
+                loc.filter.last_fix = loc.filter.time = now
+                loc.filter.speed = 0.0
+                loc._display_distance, loc._display_time = loc.filter.position, now
+                loc._sensor_pose = loc._code_pose = (0, marker_frac, START_ID)
+                loc.last_update = now
+                c.grid_lane = lane_now
                 c.grid_state = "placed"
-                self.log(f"{c.name} just before the start line (lane {lane_now:+.0f})", c.color)
-            elif before_bar or on_bar or overshot:
+                self.log(f"{c.name} one marker before the start line (lane {lane_now:+.0f})", c.color)
+            elif c.grid_state != "placed" and (on_bar or overshot):
                 c.grid_laps += 1
                 c.grid_retry_lap = True
                 c.grid_state = "retry lap"
                 c._last_lane_sent = 999.0
-                c.command_speed(GRID_SPEED, now)
-                self.log(f"{c.name}: {'overshot' if overshot else 'wrong lane'}; another lap to retry the start", c.color)
+                c.command_speed(GRID_RETRY_SPEED, now)
+                if overshot:
+                    why = "overshot"
+                elif on_bar:
+                    why = "missed the marker"
+                else:
+                    why = "wrong lane"
+                self.log(f"{c.name}: {why}; another lap to retry the start", c.color)
         return done
+
+    def _grid_lane_ok(self, c: "CarState", lane_now: Optional[float]) -> bool:
+        """Placement lane: the planned lane, or any lane no other placed car occupies.
+
+        Lane changes occasionally do not complete at grid speed. Insisting on one
+        exact lane then costs multiple full laps, so a car may settle in another
+        free lane instead (still equal longitudinally).
+        """
+        if lane_now is None:
+            return False
+        if abs(lane_now - c.grid_lane) <= 15:
+            return True
+        for other in self.cars:
+            if other is c or other.grid_state != "placed":
+                continue
+            # a stopped car stops sending lane codes; its accepted placement lane is authoritative
+            if abs(other.grid_lane - lane_now) <= 15:
+                return False
+        return True
 
     def grid_summary(self) -> tuple[int, int]:
         placed = sum(1 for c in self.cars if c.grid_state == "placed")
