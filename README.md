@@ -21,9 +21,10 @@ cars directly, with the protocol verified on real hardware (firmware 11866) and 
 
 - **Controllers**: any gamepad SDL recognises (Xbox, DualSense, Switch Pro...) plus the keyboard, one per car.
   Pads can join or leave while the app runs.
-- **Starting grid**: every participating car keeps retrying until it stops on the marker just before the
-  start line. Lost position triggers slow recovery bursts with pauses; missed starts, charging and link
-  loss do not exclude a car. Cars line up in separate lanes, then launch together on 3-2-1-GO. To leave a car out, return to
+- **Starting grid**: every participating car keeps retrying until it stops on the start-line bar. The car
+  brakes itself on the bar via a firmware command, so the stop does not depend on Bluetooth latency.
+  Lost position triggers slow recovery bursts with pauses; missed starts, charging and link loss do not
+  exclude a car. Cars line up in separate lanes, then launch together on 3-2-1-GO. To leave a car out, return to
   pairing with Back / Esc and set it to parked.
 - **Race speed**: click MAX or press right-stick / R in setup to cycle the shared ceiling from 200 to
   2000 mm/s. It caps players, AI and boosts; individual lower limits still apply. At race finish only
@@ -99,10 +100,11 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
    - **RACE** (Start / Options / Space / click): enabled with at least one connected player or AI car off its charger. Leave all cars unclaimed for an AI-only race. The controllers legend and
      the "players / AI / parked" line tell you who drives what.
 3. **Starting grid**: each participant drives to the start line in its own lane (turning around first if it
-   faces the wrong way), crawls the whole last piece at 250 mm/s and stops on the last marker before the
-   finish-line bar. Cars that miss the marker or overshoot the bar do a full lap at 500 mm/s before trying
-   again, and a car may settle in another free lane instead of repeating a lane change. Missing position
-   triggers repeated 1.5-second recovery bursts with 2-second pauses. Charging or disconnected cars
+   faces the wrong way), crawls the last piece at 250 mm/s and asks the car's firmware to brake itself on
+   the start-line bar. Because the car stops on the shared bar event, every car lines up at the same
+   physical point without the Bluetooth round-trip. Cars that overshoot the bar do a full lap at 500 mm/s
+   before trying again, and a car may settle in another free lane instead of repeating a lane change.
+   Missing position triggers repeated 1.5-second recovery bursts with 2-second pauses. Charging or disconnected cars
    remain pending. The countdown waits until every participant is ready; only parked cars are excluded.
 4. **Race**. **Back** (Esc) stops everything and returns to pairing. **F11** toggles fullscreen.
    After a finish, **Start / Options** starts another grid and countdown with the same selections.

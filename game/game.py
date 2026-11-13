@@ -13,7 +13,7 @@ from typing import Optional
 
 from anki import protocol as P
 from anki.ble_worker import BleWorker
-from anki.track import CarLocalizer, Track, STRAIGHT, START, CRISSCROSS, TURN, START_ID, FINISH_ID
+from anki.track import CarLocalizer, Track, STRAIGHT, START, CRISSCROSS, TURN, FINISH_ID
 from anki.vehicle import Vehicle
 from . import inputs as I
 from .battery import BatteryMonitor
@@ -153,6 +153,8 @@ class CarState:
         self.grid_laps = 0
         self.grid_retry_lap = False
         self.grid_prev_index: Optional[int] = None
+        self.grid_fw_stop = False
+        self.grid_fw_repeat_t = 0.0
         self.laps = 0
         self.lap_start_t: Optional[float] = None
         self.last_lap_s: Optional[float] = None
@@ -380,6 +382,10 @@ class CarState:
             self.loc.speed = 0.0
             self.loc.filter.set_speed(0, now)
 
+    def stop_on_transition(self) -> None:
+        """Ask the firmware to brake itself at the next transition bar (grid lineup)."""
+        self._send(P.stop_on_transition())
+
     def hard_stop(self, now: float, accel: int = ACCEL_STOP) -> None:
         self.cruise_speed = 0.0
         self._last_speed_sent, self._last_speed_t = 0, now
@@ -603,6 +609,8 @@ class Game:
             c.grid_laps = 0
             c.grid_retry_lap = False
             c.grid_prev_index = None
+            c.grid_fw_stop = False
+            c.grid_fw_repeat_t = 0.0
             c.cruise_speed = 0.0
             c.set_lane(c.grid_lane, now)
             c._last_lane_sent = 999.0     # force a lane command once the car is localized
@@ -632,7 +640,8 @@ class Game:
                 done = False
                 continue
             if st == "placed":
-                c.command_speed(0, now)
+                if not c.grid_fw_stop:
+                    c.command_speed(0, now)
                 continue
             done = False
             if not c.localized():
@@ -673,45 +682,59 @@ class Game:
             n = len(self.track.pieces) if self.track else 1
             lane_now = c.actual_lane()
             in_lane = self._grid_lane_ok(c, lane_now)
-            # final approach: crawl from the start of the last piece so the cars slow down early
-            # and enter the start piece slowly; the middle start code then triggers the stop
-            approaching = (loc.index == n - 1 and loc.frac > GRID_APPROACH_FRAC) or (loc.index == 0 and loc.frac < 0.8)
-            if approaching and in_lane:
+            # Entering the start piece, ask the firmware to brake itself exactly on the
+            # transition bar. This removes the host/BLE latency from the grid stop.
+            if (not c.grid_fw_stop and loc.index == 0 and loc.direction > 0
+                    and loc.frac <= 0.30 and in_lane):
+                c.stop_on_transition()
+                c.grid_fw_stop = True
+                c.grid_fw_repeat_t = now + 0.05   # one repeat in case the first write is lost
                 c.grid_state = "approach"
-                c.command_speed(GRID_CRAWL, now)
+                self.log(f"{c.name}: firmware stop armed (lane {lane_now:+.0f})", c.color)
+            elif c.grid_fw_stop:
+                if c.grid_fw_repeat_t and now >= c.grid_fw_repeat_t:
+                    c.stop_on_transition()
+                    c.grid_fw_repeat_t = 0.0
+                c.grid_state = "approach"
             else:
-                c.grid_state = "driving"
-                c.command_speed(GRID_SPEED, now)
-            c.apply_lane(now)
-            # The last code of the pre-finish half is read in every lane at the same
-            # physical longitudinal position. Stop right on it.
-            marker_frac = 0.4167
-            on_marker = (loc.index == 0 and loc.sub_id == START_ID
-                         and marker_frac - 0.02 <= loc.frac < marker_frac + 0.04)
+                # final approach: crawl from the start of the last piece so the cars slow down early
+                # and enter the start piece slowly
+                approaching = ((loc.index == n - 1 and loc.frac > GRID_APPROACH_FRAC)
+                               or (loc.index == 0 and loc.frac < 0.8))
+                if approaching and in_lane:
+                    c.grid_state = "approach"
+                    c.command_speed(GRID_CRAWL, now)
+                else:
+                    c.grid_state = "driving"
+                    c.command_speed(GRID_SPEED, now)
+                c.apply_lane(now)
+            # The bar between the pre-finish and finish halves is a transition that every
+            # car reports in every lane at the same physical point.
             on_bar = loc.index == 0 and loc.sub_id == FINISH_ID and 0.5 <= loc.frac < 0.6
             overshot = (loc.index == 0 and loc.frac >= 0.6) or (previous_index == 0 and loc.index != 0)
-            if on_marker and in_lane:
-                c.hard_stop(now)
-                loc.frac, loc.sub_id = marker_frac, START_ID
-                loc.filter.position = loc.filter.distance(0, marker_frac)
+            if on_bar and in_lane:
+                if not c.grid_fw_stop:
+                    c.hard_stop(now)   # fallback when the firmware stop was not armed
+                loc.frac, loc.sub_id = 0.5, FINISH_ID
+                loc.filter.position = loc.filter.distance(0, 0.5)
                 loc.filter.last_fix = loc.filter.time = now
                 loc.filter.speed = 0.0
                 loc._display_distance, loc._display_time = loc.filter.position, now
-                loc._sensor_pose = loc._code_pose = (0, marker_frac, START_ID)
+                loc._sensor_pose = loc._code_pose = (0, 0.5, FINISH_ID)
                 loc.last_update = now
                 c.grid_lane = lane_now
                 c.grid_state = "placed"
-                self.log(f"{c.name} one marker before the start line (lane {lane_now:+.0f})", c.color)
+                self.log(f"{c.name} on the start line (lane {lane_now:+.0f})", c.color)
             elif c.grid_state != "placed" and (on_bar or overshot):
                 c.grid_laps += 1
                 c.grid_retry_lap = True
+                c.grid_fw_stop = False
+                c.grid_fw_repeat_t = 0.0
                 c.grid_state = "retry lap"
                 c._last_lane_sent = 999.0
                 c.command_speed(GRID_RETRY_SPEED, now)
                 if overshot:
                     why = "overshot"
-                elif on_bar:
-                    why = "missed the marker"
                 else:
                     why = "wrong lane"
                 self.log(f"{c.name}: {why}; another lap to retry the start", c.color)

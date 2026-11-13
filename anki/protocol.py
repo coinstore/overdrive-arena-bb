@@ -24,6 +24,7 @@ MSG_SET_OFFSET_FROM_ROAD_CENTER = 0x2C
 MSG_TURN = 0x32
 MSG_LIGHTS_PATTERN = 0x33
 MSG_SET_CONFIG_PARAMS = 0x45
+MSG_STOP_ON_TRANSITION = 0x4A
 MSG_SDK_MODE = 0x90
 
 # vehicle -> host
@@ -83,6 +84,11 @@ def cancel_lane_change() -> bytes:
 
 def turn(turn_type: int = TURN_UTURN, trigger: int = TURN_TRIGGER_IMMEDIATE) -> bytes:
     return _msg(MSG_TURN, bytes([turn_type, trigger]))
+
+
+def stop_on_transition() -> bytes:
+    """Ask the car to brake itself at the next transition bar."""
+    return _msg(MSG_STOP_ON_TRANSITION)
 
 
 # set_lights mask: low nibble = which lights to change, high nibble = their new state
