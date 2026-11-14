@@ -40,6 +40,28 @@ class GridTests(unittest.TestCase):
         self.c.stop_on_transition.assert_called_once()
         self.c.hard_stop.assert_not_called()
 
+
+    def test_overshoot_uses_measured_start_bar(self):
+        self.g.track.start_bar_frac = self.c.loc.track.start_bar_frac = .62
+        self.c.loc.index, self.c.loc.frac, self.c.loc.sub_id = 0, .61, 34
+        self.c.grid_fw_stop = True
+        self.g.grid_tick(0)
+        self.assertNotEqual(self.c.grid_state, 'retry lap')
+        self.c.loc.frac = .63
+        self.g.grid_tick(0)
+        self.assertEqual(self.c.grid_state, 'bar pending')
+
+    def test_firmware_stop_holds_bar_then_places_after_timeout(self):
+        self.c.grid_fw_stop = True
+        self.c.loc.index, self.c.loc.frac, self.c.loc.sub_id = 0, .65, None
+        self.g.grid_tick(0)
+        self.assertEqual(self.c.grid_state, 'bar pending')
+        self.assertAlmostEqual(self.c.loc.frac, self.g.track.start_bar_frac)
+        self.c.grid_bar_pending_t = time.monotonic() - 1.0
+        self.g.grid_tick(0)
+        self.assertEqual(self.c.grid_state, 'placed')
+        self.assertTrue(self.c.start_bar_locked)
+
     def test_missing_bar_transition_does_not_park_beyond_line(self):
         self.c.loc.frac = 0.4
         self.g.grid_tick(0)
@@ -60,13 +82,13 @@ class GridTests(unittest.TestCase):
         self.c.loc.on_track = False
         with patch('game.game.time.monotonic', return_value=1000):
             self.assertFalse(self.g.grid_tick(0))
-        self.c.command_speed.assert_called_with(250, 1000)
+        self.c.command_speed.assert_called_with(300, 1000)
         with patch('game.game.time.monotonic', return_value=1002):
             self.assertFalse(self.g.grid_tick(0))
         self.c.command_speed.assert_called_with(0, 1002)
         with patch('game.game.time.monotonic', return_value=1350):
             self.assertFalse(self.g.grid_tick(0))
-        self.c.command_speed.assert_called_with(250, 1350)
+        self.c.command_speed.assert_called_with(300, 1350)
         self.assertTrue(self.c.participates())
 
     def test_recovered_car_can_become_ready(self):

@@ -147,6 +147,7 @@ class MapView:
             b = self.to_screen(*t.world_point(i, 0.0, ROAD_HALF_MM))
             pygame.draw.line(surf, (70, 72, 84), a, b, 1)
         # start / finish
+        bar = t.start_bar_frac
         for i, p in enumerate(t.pieces):
             if p.kind != START:
                 continue
@@ -155,12 +156,12 @@ class MapView:
                 for j in range(n):
                     a = -ROAD_HALF_MM + j * (2 * ROAD_HALF_MM / n)
                     b = a + 2 * ROAD_HALF_MM / n
-                    f0, f1 = 0.47 + row * 0.03, 0.50 + row * 0.03
+                    f0, f1 = bar - 0.03 + row * 0.03, bar + row * 0.03
                     quad = [self.to_screen(*t.world_point(i, f0, a)), self.to_screen(*t.world_point(i, f0, b)),
                             self.to_screen(*t.world_point(i, f1, b)), self.to_screen(*t.world_point(i, f1, a))]
                     pygame.draw.polygon(surf, (235, 235, 235) if (j + row) % 2 == 0 else (28, 28, 32), quad)
-            ax, ay = self.to_screen(*t.world_point(i, 0.66, 0))
-            bx, by = self.to_screen(*t.world_point(i, 0.90, 0))
+            ax, ay = self.to_screen(*t.world_point(i, min(0.9, bar + 0.06), 0))
+            bx, by = self.to_screen(*t.world_point(i, min(0.98, bar + 0.30), 0))
             pygame.draw.line(surf, (130, 136, 150), (ax, ay), (bx, by), 3)
             ang = math.atan2(by - ay, bx - ax)
             pygame.draw.polygon(surf, (130, 136, 150), [(bx, by),

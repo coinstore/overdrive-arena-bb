@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from anki import protocol as P
-from anki.track import CarLocalizer, Track, Piece, TURN
+from anki.track import CarLocalizer, Track, TrackScanner, Piece, START, STRAIGHT, TURN
 from game.game import CarState
 
 
@@ -56,6 +56,24 @@ class TelemetryTests(unittest.TestCase):
         car.battery = Mock()
         car._send = Mock()
         return car
+
+
+    def test_start_bar_fraction_roundtrips_and_maps_both_halves(self):
+        track = Track([Piece(34, START), Piece(36, STRAIGHT)], start_bar_frac=.6)
+        copy = Track.from_json(track.to_json())
+        self.assertAlmostEqual(copy.start_bar_frac, .6)
+        loc = CarLocalizer(copy)
+        loc.on_message(P.MSG_LOCALIZATION_POSITION_UPDATE,
+                       P.PositionUpdate(20, 34, 0, 400, 0), received_at=100)
+        self.assertAlmostEqual(loc.frac, .3)
+        loc.on_message(P.MSG_LOCALIZATION_POSITION_UPDATE,
+                       P.PositionUpdate(10, 33, 0, 400, 0), received_at=101)
+        self.assertAlmostEqual(loc.frac, .9)
+
+    def test_scanner_learns_start_bar_from_wheel_distances(self):
+        scanner = TrackScanner()
+        scanner.start_lengths = {34: [340.0, 350.0], 33: [220.0, 230.0]}
+        self.assertAlmostEqual(scanner.start_bar_fraction(), 345.0 / 570.0, places=6)
 
     def test_callback_defers_battery_io_to_drain(self):
         car = self.make_car()

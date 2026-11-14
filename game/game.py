@@ -71,7 +71,7 @@ DEATH_STOP_S = 3.0
 GRID_SPEED = 320            # speed used to drive to the start line
 GRID_RETRY_SPEED = 500      # a missed grid attempt costs a full lap; still quick, but lane changes stay reliable
 GRID_APPROACH_FRAC = 0.0    # crawl from the start of the last piece, so deceleration is early and even
-GRID_CRAWL = 250            # low, but still reads the middle start code reliably
+GRID_CRAWL = 300            # 250 mm/s loses track codes on some pieces
 GRID_RECOVERY_DRIVE_S = 1.5  # bounded slow search, followed by a pause before retrying
 GRID_RECOVERY_PAUSE_S = 2.0
 
@@ -155,6 +155,9 @@ class CarState:
         self.grid_prev_index: Optional[int] = None
         self.grid_fw_stop = False
         self.grid_fw_repeat_t = 0.0
+        self.grid_bar_pending = False
+        self.grid_bar_pending_t = 0.0
+        self.start_bar_locked = False
         self.laps = 0
         self.lap_start_t: Optional[float] = None
         self.last_lap_s: Optional[float] = None
@@ -307,6 +310,11 @@ class CarState:
                                         float(decoded["target_mm"]))
             if msg_id == P.MSG_LOCALIZATION_POSITION_UPDATE and self.loc.direction < 0:
                 self._reverse_reports += 1
+            if self.start_bar_locked and msg_id in (
+                    P.MSG_LOCALIZATION_POSITION_UPDATE,
+                    P.MSG_LOCALIZATION_TRANSITION_UPDATE,
+                    P.MSG_SPEED_UPDATE):
+                self.loc.freeze_at_start_bar(received_at)
         if self.extra_listener is not None:
             self.extra_listener(msg_id, decoded, received_at=received_at)
 
@@ -611,6 +619,9 @@ class Game:
             c.grid_prev_index = None
             c.grid_fw_stop = False
             c.grid_fw_repeat_t = 0.0
+            c.grid_bar_pending = False
+            c.grid_bar_pending_t = 0.0
+            c.start_bar_locked = False
             c.cruise_speed = 0.0
             c.set_lane(c.grid_lane, now)
             c._last_lane_sent = 999.0     # force a lane command once the car is localized
@@ -651,7 +662,7 @@ class Game:
                 cycle = (now - c.grid_recovery_t) % (GRID_RECOVERY_DRIVE_S + GRID_RECOVERY_PAUSE_S)
                 searching = cycle < GRID_RECOVERY_DRIVE_S
                 c.grid_state = "recovering" if searching else "recovery pause"
-                c.command_speed(min(250, c.max_speed) if searching else 0, now)
+                c.command_speed(min(300, c.max_speed) if searching else 0, now)
                 continue
             if c.grid_recovery_t is not None:
                 c.grid_recovery_t = None
@@ -710,26 +721,76 @@ class Game:
                 c.apply_lane(now)
             # The bar between the pre-finish and finish halves is a transition that every
             # car reports in every lane at the same physical point.
-            on_bar = loc.index == 0 and loc.sub_id == FINISH_ID and 0.5 <= loc.frac < 0.6
-            overshot = (loc.index == 0 and loc.frac >= 0.6) or (previous_index == 0 and loc.index != 0)
+            bar = self.track.start_bar_frac if self.track else 0.5
+            if c.grid_fw_stop:
+                if not c.grid_bar_pending and (
+                        (loc.index == 0 and loc.frac >= bar)
+                        or (previous_index == 0 and loc.index != 0)):
+                    c.grid_bar_pending = True
+                    c.grid_bar_pending_t = now
+                    loc.hold_at_start_bar(now)
+                    c.command_speed(0, now)
+                    c.grid_state = "bar pending"
+                if c.grid_bar_pending:
+                    fresh_bar = loc.sub_id == FINISH_ID
+                    fresh_code = (loc.last_code_t > c.grid_bar_pending_t
+                                  and loc.last_code_piece == FINISH_ID)
+                    moved_on = (loc.last_transition_t > c.grid_bar_pending_t
+                                and loc.index != 0)
+                    if fresh_bar or fresh_code:
+                        loc.freeze_at_start_bar(now)
+                        c.command_speed(0, now)
+                        c.grid_lane = lane_now
+                        c.grid_state = "placed"
+                        c.grid_fw_stop = False
+                        c.grid_bar_pending = False
+                        c.grid_fw_repeat_t = 0.0
+                        c.start_bar_locked = True
+                        self.log(f"{c.name} on the start line (lane {lane_now:+.0f})", c.color)
+                    elif moved_on:
+                        c.grid_laps += 1
+                        c.grid_retry_lap = True
+                        c.grid_fw_stop = False
+                        c.grid_bar_pending = False
+                        c.grid_fw_repeat_t = 0.0
+                        c.grid_state = "retry lap"
+                        c._last_lane_sent = 999.0
+                        c.command_speed(GRID_RETRY_SPEED, now)
+                        self.log(f"{c.name}: overshot; another lap to retry the start", c.color)
+                    elif now - c.grid_bar_pending_t > 0.8:
+                        loc.freeze_at_start_bar(now)
+                        c.command_speed(0, now)
+                        c.grid_lane = lane_now
+                        c.grid_state = "placed"
+                        c.grid_fw_stop = False
+                        c.grid_bar_pending = False
+                        c.grid_fw_repeat_t = 0.0
+                        c.start_bar_locked = True
+                        self.log(f"{c.name} on the start line (lane {lane_now:+.0f})", c.color)
+                    else:
+                        loc.hold_at_start_bar(now)
+                        c.command_speed(0, now)
+                        c.grid_state = "bar pending"
+                    continue
+            on_bar = loc.index == 0 and loc.sub_id == FINISH_ID and bar <= loc.frac < bar + 0.1
+            overshot = (loc.index == 0 and loc.frac >= bar + 0.1) or (previous_index == 0 and loc.index != 0)
             if on_bar and in_lane:
                 if not c.grid_fw_stop:
-                    c.hard_stop(now)   # fallback when the firmware stop was not armed
-                loc.frac, loc.sub_id = 0.5, FINISH_ID
-                loc.filter.position = loc.filter.distance(0, 0.5)
-                loc.filter.last_fix = loc.filter.time = now
-                loc.filter.speed = 0.0
-                loc._display_distance, loc._display_time = loc.filter.position, now
-                loc._sensor_pose = loc._code_pose = (0, 0.5, FINISH_ID)
-                loc.last_update = now
+                    c.hard_stop(now)
+                loc.freeze_at_start_bar(now)
+                c.command_speed(0, now)
                 c.grid_lane = lane_now
                 c.grid_state = "placed"
+                c.grid_fw_stop = False
+                c.grid_fw_repeat_t = 0.0
+                c.start_bar_locked = True
                 self.log(f"{c.name} on the start line (lane {lane_now:+.0f})", c.color)
             elif c.grid_state != "placed" and (on_bar or overshot):
                 c.grid_laps += 1
                 c.grid_retry_lap = True
                 c.grid_fw_stop = False
                 c.grid_fw_repeat_t = 0.0
+                c.grid_bar_pending = False
                 c.grid_state = "retry lap"
                 c._last_lane_sent = 999.0
                 c.command_speed(GRID_RETRY_SPEED, now)
@@ -811,6 +872,10 @@ class Game:
         self.lasers.clear()
         self.fx.clear()
         for c in self.cars:
+            if c.grid_state == "placed" and c.loc is not None:
+                c.loc.last_update = now
+                c.ai_track_recovery = ""
+                c.start_bar_locked = False
             c.hp = MAX_HP
             c.kills = c.deaths = c.laps = 0
             c.last_lap_s = c.best_lap_s = None
@@ -835,7 +900,8 @@ class Game:
             c.boost_ready_at = now + 3.0
             c.cruise_speed = 0.0
             if (c.grid_state == "placed" and c.map_position_known() and c.loc is not None
-                    and c.loc.direction > 0 and c.loc.index == 0 and 0.5 <= c.loc.frac < 0.6):
+                    and c.loc.direction > 0 and c.loc.index == 0
+                    and self.track.start_bar_frac <= c.loc.frac < self.track.start_bar_frac + 0.1):
                 # A car correctly parked on the bar starts its first timed lap at GO.
                 c.lap_start_t = now
                 c.lap_note = "timing"
@@ -859,6 +925,9 @@ class Game:
         self.phase = "idle"
         for c in self.cars:
             c.grid_state = ""
+            c.grid_fw_stop = False
+            c.grid_bar_pending = False
+            c.start_bar_locked = False
         for c in self.cars:
             c.hard_stop(now)
 
@@ -874,7 +943,8 @@ class Game:
     def ranking(self) -> list["CarState"]:
         def progress(c: CarState) -> float:
             p = c.loc.progress() if c.map_position_known() and c.loc else None
-            return (p - 0.5) % len(self.track.pieces) if p is not None and self.track else -1.0
+            return ((p - self.track.start_bar_frac) % len(self.track.pieces)
+                    if p is not None and self.track else -1.0)
         if self.mode == "race":
             return sorted(self.cars, key=lambda c: (-c.laps, c.race_finish_s if c.race_finish_s is not None else float("inf"),
                                                     -progress(c), c.index))
@@ -956,7 +1026,8 @@ class Game:
             c._lap_travel = 0.0
             return
         c._lap_travel += delta
-        to_line = (0.5 - prev) % n
+        bar = self.track.start_bar_frac if self.track else 0.5
+        to_line = (bar - prev) % n
         if delta > 0 and 0 < to_line <= delta + 1e-9:
             fraction = to_line / delta
             if self.track:
@@ -968,7 +1039,7 @@ class Game:
                 total = sum(lengths)
                 travelled = (distance(p) - distance(prev)) % total
                 if travelled > 0:
-                    fraction = ((distance(.5) - distance(prev)) % total) / travelled
+                    fraction = ((distance(bar) - distance(prev)) % total) / travelled
             crossing_t = now if previous_t is None else previous_t + (now - previous_t) * fraction
             overshoot = delta - to_line
             if c.lap_start_t is not None and c._lap_travel - overshoot >= n - 0.15:
@@ -1412,7 +1483,7 @@ class Game:
             c.ai_track_recovery = "waiting"
             self.log(f"{c.name}: stopped; put back on track, press R / right-stick click", WARN_COLOR)
         if c.car.connected:
-            c.command_speed(min(250, c.max_speed) if c.ai_track_recovery == "searching" else 0, now)
+            c.command_speed(min(300, c.max_speed) if c.ai_track_recovery == "searching" else 0, now)
         else:
             c._last_speed_sent = 0
         return True

@@ -16,6 +16,7 @@ import os
 import threading
 import time
 from collections import Counter, deque
+from statistics import median
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -120,8 +121,9 @@ class Piece:
 
 
 class Track:
-    def __init__(self, pieces: list[Piece]):
+    def __init__(self, pieces: list[Piece], start_bar_frac: float = 0.5):
         self.pieces = pieces
+        self.start_bar_frac = min(0.95, max(0.05, float(start_bar_frac)))
         self.closed = self._layout()
 
     def __len__(self) -> int:
@@ -190,7 +192,9 @@ class Track:
 
     # --- persistence ----------------------------------------------------
     def to_json(self) -> str:
-        return json.dumps({"version": 1, "closed": self.closed, "pieces": [asdict(p) for p in self.pieces]}, indent=1)
+        return json.dumps({"version": 1, "closed": self.closed,
+                           "start_bar_frac": self.start_bar_frac,
+                           "pieces": [asdict(p) for p in self.pieces]}, indent=1)
 
     @classmethod
     def from_json(cls, text: str) -> "Track":
@@ -200,7 +204,7 @@ class Track:
             d = dict(d)
             d["cell"] = tuple(d.get("cell", (0, 0)))
             pieces.append(Piece(**d))
-        return cls(pieces)
+        return cls(pieces, data.get("start_bar_frac", 0.5))
 
     def save(self, path: Path) -> None:
         path.write_text(self.to_json(), encoding="utf-8")
@@ -224,7 +228,7 @@ class Track:
         return " -> ".join(parts) + ("  [closed]" if self.closed else "  [does not close]")
 
 
-def build_track(raw: list[dict]) -> Track:
+def build_track(raw: list[dict], start_bar_frac: float = 0.5) -> Track:
     """raw: [{id, turn, reversed}] as recorded by the scanner for one lap starting at piece 34.
     Merges 34+33 into one Start piece and assigns kinds."""
     pieces: list[Piece] = []
@@ -244,7 +248,7 @@ def build_track(raw: list[dict]) -> Track:
         cells = 2 if kind == JUMP_RAMP else 1
         pieces.append(Piece(pid if pid is not None else -1, kind, turn, r["reversed"], cells=cells))
         i += 1
-    return Track(pieces)
+    return Track(pieces, start_bar_frac)
 
 
 # ---------------------------------------------------------------- scanner
@@ -324,6 +328,7 @@ class TrackScanner:
         self._attempts = self.evidence.attempts
         # calibration: does "reverse parsing" on a turn mean right or left? learned from wheel data
         self._rev_turn = self.evidence.turn_votes
+        self.start_lengths: dict[int, list[float]] = {}
 
     def on_message(self, msg_id: int, decoded, received_at: Optional[float] = None) -> None:
         with self.lock:
@@ -365,6 +370,10 @@ class TrackScanner:
             return
         pid, rev = Counter(self.current).most_common(1)[0][0]
         self.current.clear()
+        if tr is not None and pid in (START_ID, FINISH_ID):
+            wheel_mm = (tr.left_wheel_cm + tr.right_wheel_cm) * 5.0
+            if wheel_mm >= 50.0:
+                self.start_lengths.setdefault(pid, []).append(wheel_mm)
         kind = piece_type(pid)
         turn = tr.turn if tr and kind == TURN else None
         if kind == TURN and turn:
@@ -390,6 +399,15 @@ class TrackScanner:
             self.lap.append(entry)
         if self.recording:
             self.state = f"recording lap: {len(self.lap)} pieces"
+
+    def start_bar_fraction(self) -> float:
+        first = self.start_lengths.get(START_ID)
+        second = self.start_lengths.get(FINISH_ID)
+        if first and second:
+            a, b = median(first), median(second)
+            if a + b > 0:
+                return a / (a + b)
+        return 0.5
 
     def _finish_lap(self) -> None:
         candidate = self.evidence.normalized(self.lap)
@@ -418,7 +436,7 @@ class TrackScanner:
         del self._attempts[:-12]
         complete = all(e["id"] is not None and piece_type(e["id"]) != UNKNOWN and
                        (piece_type(e["id"]) != TURN or e["turn"] is not None) for e in candidate)
-        track = build_track(candidate)
+        track = build_track(candidate, self.start_bar_fraction())
         if complete and track.closed:
             self.track = track
             self.state = f"done: {len(track)} pieces"
@@ -448,6 +466,7 @@ class CarLocalizer:
         self.sub_id: Optional[int] = None   # 34 / 33 while on the start piece
         self.last_code_piece: Optional[int] = None   # piece id of the last code read since the last bar
         self.last_code_t = 0.0
+        self.last_transition_t = 0.0
         self.last_update = time.monotonic()
         self.on_track = False
         self.filter = PositionFilter(track)
@@ -582,8 +601,8 @@ class CarLocalizer:
         frac = 1.0 - frac_print if piece.reversed else frac_print
         if piece.kind == START:
             self.sub_id = pos.piece
-            half = 0.0 if pos.piece == START_ID else 0.5
-            frac = half + 0.5 * frac
+            bar = self.track.start_bar_frac
+            frac = bar * frac if pos.piece == START_ID else bar + (1.0 - bar) * frac
         else:
             self.sub_id = None
         self.frac = frac
@@ -597,10 +616,11 @@ class CarLocalizer:
         now = time.monotonic() if now is None else now
         if self.index is None:
             return
+        self.last_transition_t = now
         if self.filter.position is not None and self.on_track and now - self.filter.last_fix <= self.filter.HORIZON:
             predicted = self.filter.predict(now)
             boundaries = [(self.filter.offsets[i], i, 0.0) for i in range(len(self.track.pieces))]
-            boundaries += [(self.filter.distance(i, .5), i, .5)
+            boundaries += [(self.filter.distance(i, self.track.start_bar_frac), i, self.track.start_bar_frac)
                            for i, p in enumerate(self.track.pieces) if p.kind == START]
             def error(boundary):
                 return abs((boundary[0] - predicted + self.filter.length / 2) % self.filter.length - self.filter.length / 2)
@@ -611,7 +631,8 @@ class CarLocalizer:
             if frac == 0 and self.direction < 0:
                 index, frac = (index - 1) % len(self.track.pieces), 1.0
             self.index, self.frac = index, frac
-            self.sub_id = ((FINISH_ID if self.direction > 0 else START_ID) if frac == .5 else None)
+            is_bar = abs(frac - self.track.start_bar_frac) < 1e-6
+            self.sub_id = ((FINISH_ID if self.direction > 0 else START_ID) if is_bar else None)
             self.last_code_piece = None
             self.last_update = now
             self._fixed = True
@@ -622,12 +643,13 @@ class CarLocalizer:
         if piece.kind == START:
             # the start piece has a bar between its 34 and 33 halves (the finish line). If no code was read
             # in the current half (common at low speed) decide from the dead-reckoned position instead.
-            if self.direction > 0 and (self.sub_id == START_ID or (self.sub_id is None and self.frac < 0.85)):
-                self.frac, self.sub_id = 0.5, FINISH_ID
+            bar = self.track.start_bar_frac
+            if self.direction > 0 and (self.sub_id == START_ID or (self.sub_id is None and self.frac < bar + 0.15)):
+                self.frac, self.sub_id = bar, FINISH_ID
                 self.last_update = now
                 return
-            if self.direction < 0 and (self.sub_id == FINISH_ID or (self.sub_id is None and self.frac > 0.15)):
-                self.frac, self.sub_id = 0.5, START_ID
+            if self.direction < 0 and (self.sub_id == FINISH_ID or (self.sub_id is None and self.frac > bar - 0.15)):
+                self.frac, self.sub_id = bar, START_ID
                 self.last_update = now
                 return
         self.sub_id = None
@@ -637,6 +659,23 @@ class CarLocalizer:
         self.last_update = now
 
     # ---- main-thread helpers ----
+    def hold_at_start_bar(self, now: float) -> None:
+        bar = self.track.start_bar_frac
+        self.index, self.frac = 0, bar
+        self.on_track = True
+        self.filter.position = self.filter.distance(0, bar)
+        self.filter.last_fix = self.filter.time = now
+        self.filter.speed = 0.0
+        self.filter.lane = self.lane_mm
+        self._display_distance, self._display_time = self.filter.position, now
+        self.last_update = now
+
+    def freeze_at_start_bar(self, now: float) -> None:
+        self.hold_at_start_bar(now)
+        bar = self.track.start_bar_frac
+        self.sub_id = FINISH_ID
+        self._sensor_pose = self._code_pose = (0, bar, FINISH_ID)
+
     def _publish_progress(self, now: float) -> Optional[float]:
         """One unwrapped route coordinate for both drawing and race scoring.
 
