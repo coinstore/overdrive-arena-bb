@@ -155,6 +155,8 @@ class CarState:
         self.grid_prev_index: Optional[int] = None
         self.grid_fw_stop = False
         self.grid_fw_repeat_t = 0.0
+        self.grid_bar_pending = False
+        self.grid_bar_pending_t = 0.0
         self.start_bar_locked = False
         self.laps = 0
         self.lap_start_t: Optional[float] = None
@@ -310,12 +312,6 @@ class CarState:
                                         float(decoded["target_mm"]))
             if msg_id == P.MSG_LOCALIZATION_POSITION_UPDATE and self.loc.direction < 0:
                 self._reverse_reports += 1
-            if (self.grid_fw_stop and msg_id == P.MSG_LOCALIZATION_TRANSITION_UPDATE
-                    and self.grid_state not in ("placed", "")):
-                # The firmware stop was armed on the start piece; its next
-                # transition is the start bar.  Do not let a stale prediction
-                # choose the next piece instead.
-                self.loc.freeze_at_start_bar(received_at)
             if self.start_bar_locked and msg_id in (
                     P.MSG_LOCALIZATION_POSITION_UPDATE,
                     P.MSG_LOCALIZATION_TRANSITION_UPDATE,
@@ -633,6 +629,8 @@ class Game:
             c.grid_prev_index = None
             c.grid_fw_stop = False
             c.grid_fw_repeat_t = 0.0
+            c.grid_bar_pending = False
+            c.grid_bar_pending_t = 0.0
             c.start_bar_locked = False
             c.cruise_speed = 0.0
             c.set_lane(c.grid_lane, now)
@@ -733,13 +731,64 @@ class Game:
             # The bar between the pre-finish and finish halves is a transition that every
             # car reports in every lane at the same physical point.
             bar = self.track.start_bar_frac if self.track else 0.5
-            # With a firmware stop armed, the bar transition is authoritative:
-            # the engine can already have predicted past the narrow window.
-            fw_bar = c.grid_fw_stop and (loc.sub_id == FINISH_ID
-                                          or loc.last_code_piece == FINISH_ID)
+            if c.grid_fw_stop:
+                # The engine must not decide "overshot" from its own stale
+                # speed prediction.  Hold at the bar and wait for the real
+                # bar transition / code or a short settle timeout.
+                if not c.grid_bar_pending and (
+                        (loc.index == 0 and loc.frac >= bar)
+                        or (previous_index == 0 and loc.index != 0)):
+                    c.grid_bar_pending = True
+                    c.grid_bar_pending_t = now
+                    loc.hold_at_start_bar(now)
+                    c.command_speed(0, now)
+                    c.grid_state = "bar pending"
+                if c.grid_bar_pending:
+                    fresh_bar = loc.sub_id == FINISH_ID
+                    fresh_code = (loc.last_code_t > c.grid_bar_pending_t
+                                  and loc.last_code_piece == FINISH_ID)
+                    moved_on = (loc.last_transition_t > c.grid_bar_pending_t
+                                and loc.index != 0)
+                    if fresh_bar or fresh_code:
+                        loc.freeze_at_start_bar(now)
+                        c.command_speed(0, now)
+                        c.grid_lane = lane_now
+                        c.grid_state = "placed"
+                        c.grid_fw_stop = False
+                        c.grid_bar_pending = False
+                        c.grid_fw_repeat_t = 0.0
+                        c.start_bar_locked = True
+                        self.log(f"{c.name} on the start line (lane {lane_now:+.0f})", c.color)
+                    elif moved_on:
+                        c.grid_laps += 1
+                        c.grid_retry_lap = True
+                        c.grid_fw_stop = False
+                        c.grid_bar_pending = False
+                        c.grid_fw_repeat_t = 0.0
+                        c.grid_state = "retry lap"
+                        c._last_lane_sent = 999.0
+                        c.command_speed(GRID_RETRY_SPEED, now)
+                        self.log(f"{c.name}: overshot; another lap to retry the start", c.color)
+                    elif now - c.grid_bar_pending_t > 0.8:
+                        # The firmware stopped but sent no usable bar packet.
+                        loc.freeze_at_start_bar(now)
+                        c.command_speed(0, now)
+                        c.grid_lane = lane_now
+                        c.grid_state = "placed"
+                        c.grid_fw_stop = False
+                        c.grid_bar_pending = False
+                        c.grid_fw_repeat_t = 0.0
+                        c.start_bar_locked = True
+                        self.log(f"{c.name} on the start line (lane {lane_now:+.0f})", c.color)
+                    else:
+                        loc.hold_at_start_bar(now)
+                        c.command_speed(0, now)
+                        c.grid_state = "bar pending"
+                    continue
+            fw_bar = c.grid_fw_stop and loc.sub_id == FINISH_ID
             on_bar = fw_bar or (loc.index == 0 and loc.sub_id == FINISH_ID
                                 and bar <= loc.frac < bar + 0.1)
-            overshot = (loc.index == 0 and loc.frac >= 0.6) or (previous_index == 0 and loc.index != 0)
+            overshot = (loc.index == 0 and loc.frac >= bar + 0.1) or (previous_index == 0 and loc.index != 0)
             if on_bar and in_lane:
                 if not c.grid_fw_stop:
                     c.hard_stop(now)   # fallback when the firmware stop was not armed
@@ -756,6 +805,7 @@ class Game:
                 c.grid_retry_lap = True
                 c.grid_fw_stop = False
                 c.grid_fw_repeat_t = 0.0
+                c.grid_bar_pending = False
                 c.grid_state = "retry lap"
                 c._last_lane_sent = 999.0
                 c.command_speed(GRID_RETRY_SPEED, now)
@@ -893,6 +943,7 @@ class Game:
         for c in self.cars:
             c.grid_state = ""
             c.grid_fw_stop = False
+            c.grid_bar_pending = False
             c.start_bar_locked = False
         for c in self.cars:
             c.hard_stop(now)

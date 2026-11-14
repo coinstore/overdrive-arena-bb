@@ -42,6 +42,18 @@ class GridTests(unittest.TestCase):
         self.c.hard_stop.assert_not_called()
 
 
+
+    def test_overshoot_uses_the_measured_start_bar_not_hardcoded_half(self):
+        self.g.track.start_bar_frac = self.c.loc.track.start_bar_frac = .62
+        self.c.loc.frac, self.c.loc.sub_id = .61, 34
+        self.c.grid_fw_stop = True
+        self.g.grid_tick(0)
+        self.assertNotEqual(self.c.grid_state, 'retry lap')
+        self.assertEqual(self.c.grid_laps, 0)
+        self.c.loc.frac = .63
+        self.g.grid_tick(0)
+        self.assertEqual(self.c.grid_state, 'bar pending')
+
     def test_firmware_stop_accepts_bar_after_engine_predicted_past_it(self):
         self.c.grid_fw_stop = True
         self.c.loc.index, self.c.loc.frac, self.c.loc.sub_id = 1, .9, 33

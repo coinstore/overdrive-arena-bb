@@ -471,6 +471,7 @@ class CarLocalizer:
         self.sub_id: Optional[int] = None   # 34 / 33 while on the start piece
         self.last_code_piece: Optional[int] = None   # piece id of the last code read since the last bar
         self.last_code_t = 0.0
+        self.last_transition_t = 0.0
         self.last_update = time.monotonic()
         self.on_track = False
         self.filter = PositionFilter(track)
@@ -632,6 +633,7 @@ class CarLocalizer:
         now = time.monotonic() if now is None else now
         if self.index is None:
             return
+        self.last_transition_t = now
         if self.filter.position is not None and self.on_track and now - self.filter.last_fix <= self.filter.HORIZON:
             predicted = self.filter.predict(now)
             boundaries = [(self.filter.offsets[i], i, 0.0) for i in range(len(self.track.pieces))]
@@ -695,24 +697,30 @@ class CarLocalizer:
         self.engine_distance = anchor
         self.index, self.frac = index, frac
 
-    def freeze_at_start_bar(self, now: float) -> None:
-        """Place both the filter and the engine exactly on the start bar.
+    def hold_at_start_bar(self, now: float) -> None:
+        """Hold filter and engine on the start bar without claiming a bar code.
 
-        The firmware stop does not reliably produce a 0x36 actual=0 packet.
-        Without this, the engine keeps dead-reckoning with the last measured
-        speed after the physical car has already stopped.
+        Used while the grid waits for the bar transition or the settle
+        timeout.  ``freeze_at_start_bar`` additionally records the FINISH
+        sub-piece as confirmed.
         """
         bar = self.track.start_bar_frac
-        self.index, self.frac, self.sub_id = 0, bar, FINISH_ID
+        self.index, self.frac = 0, bar
         self.on_track = True
         self.filter.position = self.filter.distance(0, bar)
         self.filter.last_fix = self.filter.time = now
         self.filter.speed = 0.0
         self.filter.lane = self.lane_mm
         self._display_distance, self._display_time = self.filter.position, now
-        self._sensor_pose = self._code_pose = (0, bar, FINISH_ID)
         self._set_engine_anchor(0, bar, now, 0.0)
         self.last_update = now
+
+    def freeze_at_start_bar(self, now: float) -> None:
+        """Place both filter and engine exactly on the start bar and confirm it."""
+        self.hold_at_start_bar(now)
+        bar = self.track.start_bar_frac
+        self.sub_id = FINISH_ID
+        self._sensor_pose = self._code_pose = (0, bar, FINISH_ID)
 
     def rebase_engine_speed(self, speed: float, now: float) -> None:
         """Keep the engine prediction continuous when a speed update arrives."""
