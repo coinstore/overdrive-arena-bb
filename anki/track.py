@@ -31,6 +31,7 @@ DATA_FILE = Path(__file__).parent / "data" / "offsetInfo.json"
 # in smoothly. A small lead compensates BLE notification latency; both can be
 # tuned on real hardware via the environment.
 RENDER_LEAD_S = float(os.environ.get("ARENA_RENDER_LEAD", "0.0"))
+ENGINE_HORIZON_S = float(os.environ.get("ARENA_ENGINE_HORIZON", "3.0"))
 LANE_FEEDBACK_ENABLED = os.environ.get("ARENA_LANE_FEEDBACK", "1") != "0"
 RENDER_RESET_BACK_MM = float(os.environ.get("ARENA_RENDER_RESET_BACK", "500"))
 
@@ -477,11 +478,15 @@ class CarLocalizer:
         self.filter = PositionFilter(track)
         self._sensor_pose = None
         self._code_pose = None
-        self._prediction_t = self.last_update
+        self._prediction_t = 0.0
         self._display_distance = None
         self._display_time = None
         self._render_distance = None
         self._render_epoch = None
+        self.engine_distance = None
+        self._engine_anchor = None
+        self._engine_anchor_t = 0.0
+        self._engine_speed = 0.0
         self.route_epoch = 0
         self.motion_samples = deque(maxlen=4096)
 
@@ -512,6 +517,8 @@ class CarLocalizer:
             self.filter.position = None
             self._display_distance = None
             self._display_time = None
+            self.engine_distance = None
+            self._engine_anchor = None
             self.route_epoch += 1
             self.motion_samples.append((None, now, self.route_epoch))
             return
@@ -526,9 +533,15 @@ class CarLocalizer:
                 self._display_time = None
                 self.route_epoch += 1
             # Freshness/age in the HUD uses arrival, not the measurement time.
+            # The engine is re-anchored at this measurement and then predicted
+            # to the current frame.
+            engine_now = max(now, self._prediction_t)
+            self._set_engine_anchor(self.index, self.frac, fix_time,
+                                    self.direction * self.speed)
             self.last_update = now
-            self._prediction_t = now
+            self._prediction_t = engine_now
             self._publish_progress(now)
+            self._update_engine(engine_now)
 
     def _match(self, pid: int) -> Optional[int]:
         pieces = self.track.pieces
@@ -672,6 +685,52 @@ class CarLocalizer:
         self.last_update = now
 
     # ---- main-thread helpers ----
+    def _unwrap_engine(self, distance: float) -> float:
+        if self.engine_distance is None:
+            return distance
+        length = self.filter.length
+        return distance + round((self.engine_distance - distance) / length) * length
+
+    def _set_engine_anchor(self, index: int, frac: float, now: float, speed: float) -> None:
+        anchor = self._unwrap_engine(self.filter.distance(index, frac))
+        self._engine_anchor = anchor
+        self._engine_anchor_t = now
+        self._engine_speed = speed
+        self.engine_distance = anchor
+        self.index, self.frac = index, frac
+
+    def rebase_engine_speed(self, speed: float, now: float) -> None:
+        """Keep the engine prediction continuous when a speed update arrives."""
+        if self._engine_anchor is not None:
+            distance = self.filter.predict_distance(self._engine_anchor, self._engine_speed,
+                                                    self._engine_anchor_t, now,
+                                                    ENGINE_HORIZON_S, self.lane_mm)
+            if distance is not None:
+                self._engine_anchor = distance
+                self._engine_anchor_t = now
+                self.engine_distance = distance
+        self._engine_speed = speed
+
+    def engine_at(self, now: float) -> Optional[float]:
+        if self._engine_anchor is None:
+            return None
+        return self.filter.predict_distance(self._engine_anchor, self._engine_speed,
+                                            self._engine_anchor_t, now,
+                                            ENGINE_HORIZON_S, self.lane_mm)
+
+    def _update_engine(self, now: float) -> None:
+        """Continuous position for weapons/AI, independent of display smoothing.
+
+        The engine is anchored at the latest code/bar and dead-reckons from
+        there with the measured speed.  It does not inherit the display
+        filter's lag or its monotonic hold; it may correct at the next anchor.
+        """
+        distance = self.engine_at(now)
+        if distance is None:
+            return
+        self.engine_distance = distance
+        self.index, self.frac = self.filter.pose(distance)
+
     def _publish_progress(self, now: float) -> Optional[float]:
         """One unwrapped route coordinate for both drawing and race scoring.
 
@@ -718,8 +777,8 @@ class CarLocalizer:
         now = now if now is not None else self._prediction_t + max(0.0, dt)
         if self.filter.position is not None:
             self._prediction_t = now
-            projected = self._publish_progress(now)
-            self.index, self.frac = self.filter.pose(projected)
+            self._publish_progress(now)
+            self._update_engine(now)
             return
         if self.index is None or self.speed <= 0:
             return
@@ -751,7 +810,9 @@ class CarLocalizer:
         if not self.on_track or self.filter.position is None:
             return None
         lead = RENDER_LEAD_S if lead is None else lead
-        target = self.filter.predict(now + lead)
+        target = self.engine_at(now + lead)
+        if target is None:
+            target = self.filter.predict(now + lead, ENGINE_HORIZON_S)
         if target is None:
             return None
         if self._render_epoch != self.route_epoch or self._render_distance is None:

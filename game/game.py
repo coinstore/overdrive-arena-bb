@@ -38,9 +38,9 @@ def grid_lane_order(count: int) -> tuple[float, ...]:
         return (LANES[0], LANES[2], LANES[3])
     return LANES
 
-SPEED_SEND_MIN_DELTA = 15
+SPEED_SEND_MIN_DELTA = 40
 SPEED_KEEPALIVE_S = 0.5
-SPEED_SEND_INTERVAL_S = 0.1      # 10 Hz leaves BLE connection events for position notifications
+SPEED_SEND_INTERVAL_S = 0.2      # 5 Hz; the firmware interpolates between targets
 PLAYER_ACCEL_RATE = 450.0        # mm/s^2 at full R2/W; analog trigger travel scales this
 PLAYER_BRAKE_RATE = 900.0        # mm/s^2 at full L2/S
 MIN_PLAYER_SPEED = 300           # below this the cars stutter and miss track codes
@@ -48,9 +48,9 @@ LANE_SEND_MIN_DELTA = 3.0
 LANE_SEND_INTERVAL_S = 0.1
 LANE_SYNC_IDLE_S = 1.5
 STEER_LANE_THRESHOLD = 0.5   # stick deflection that requests the next lane; one step per push
-# gentle acceleration: hard motor current on tired batteries browns out the BLE radio (cars reboot)
-ACCEL_UP = 600
-ACCEL_DOWN = 1500
+# Match the firmware ramp to the host ramp so sparse targets interpolate smoothly.
+ACCEL_UP = 450
+ACCEL_DOWN = 900
 ACCEL_STOP = 2500
 
 MAX_HP = 100
@@ -212,6 +212,7 @@ class CarState:
 
         self._last_speed_sent = 0
         self._last_speed_t = 0.0
+        self._last_drive_input = 0.0        # throttle minus brake; detects edge/release
         self.cruise_speed = 0.0             # player's held target speed (R2/L2 or W/S), not a direct trigger value
         self._last_lane_sent = 0.0
         self._last_lane_t = 0.0
@@ -298,6 +299,7 @@ class CarState:
         elif msg_id == P.MSG_SPEED_UPDATE and isinstance(decoded, P.SpeedUpdate) and self.loc is not None:
             self.loc.speed = float(decoded.actual_mm_s)
             self.loc.filter.set_speed(self.loc.direction * self.loc.speed, received_at)
+            self.loc.rebase_engine_speed(self.loc.direction * self.loc.speed, received_at)
         if self.loc is not None:
             self.loc.on_message(msg_id, decoded, received_at=received_at,
                                 measurement_delay=self.position_lead_s)
@@ -374,13 +376,16 @@ class CarState:
         # each change can saturate the car's BLE link, delaying its position
         # notifications (the map then freezes for a second and jumps). Cap the
         # rate; zeroing an emergency stop is always immediate.
-        due = force or now - self._last_speed_t >= SPEED_SEND_INTERVAL_S
-        if zeroing or ((changed or stale) and due):
+        due = now - self._last_speed_t >= SPEED_SEND_INTERVAL_S
+        # A release/reversal must land exactly on the held target, not wait
+        # for the next sparse update.
+        if zeroing or (force and speed != self._last_speed_sent) or ((changed or stale) and due):
             self._last_speed_sent, self._last_speed_t = speed, now
             self.ble.fire(self.car.set_speed(speed, accel))
         if speed == 0 and self.loc is not None:
             self.loc.speed = 0.0
             self.loc.filter.set_speed(0, now)
+            self.loc.rebase_engine_speed(0.0, now)
 
     def stop_on_transition(self) -> None:
         """Ask the firmware to brake itself at the next transition bar (grid lineup)."""
@@ -388,11 +393,13 @@ class CarState:
 
     def hard_stop(self, now: float, accel: int = ACCEL_STOP) -> None:
         self.cruise_speed = 0.0
+        self._last_drive_input = 0.0
         self._last_speed_sent, self._last_speed_t = 0, now
         self.ble.fire(self.car.set_speed(0, accel))
         if self.loc is not None:
             self.loc.speed = 0.0
             self.loc.filter.set_speed(0, now)
+            self.loc.rebase_engine_speed(0.0, now)
 
     def participates(self) -> bool:
         return self.source is not None or self.ai
@@ -812,6 +819,11 @@ class Game:
         self.lasers.clear()
         self.fx.clear()
         for c in self.cars:
+            if c.grid_state == "placed" and c.loc is not None:
+                # The countdown is longer than the AI freshness window; the
+                # last grid fix is still the known start-line pose.
+                c.loc.last_update = now
+                c.ai_track_recovery = ""
             c.hp = MAX_HP
             c.kills = c.deaths = c.laps = 0
             c.last_lap_s = c.best_lap_s = None
@@ -1089,6 +1101,7 @@ class Game:
             # accelerates quickly. command_speed caps the BLE write rate.
             up = max(0.0, min(1.0, src.throttle()))
             down = max(0.0, min(1.0, src.brake()))
+            drive = up - down
             was_moving = c.cruise_speed > 0
             c.cruise_speed = max(0.0, min(c.max_speed, c.cruise_speed +
                                           (up * PLAYER_ACCEL_RATE - down * PLAYER_BRAKE_RATE) * dt))
@@ -1097,7 +1110,10 @@ class Game:
             if down > 0 or c.cruise_speed <= 0:
                 c.boost_until = 0.0
             target = self.boost_target(c, c.cruise_speed, now) if c.cruise_speed > 0 else 0.0
-            c.command_speed(target, now)
+            edge = (c._last_drive_input == 0.0) != (drive == 0.0)
+            reversal = c._last_drive_input * drive < 0
+            c.command_speed(target, now, force=edge or reversal)
+            c._last_drive_input = drive
         c.steer(src.steer(), dt, now)
         if src.pressed(I.LANE_LEFT):
             c.snap_lane(-1, now)

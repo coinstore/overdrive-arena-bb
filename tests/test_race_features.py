@@ -163,13 +163,20 @@ class PredictionTests(unittest.TestCase):
         self.car.on_message(P.MSG_LOCALIZATION_TRANSITION_UPDATE, transition, received_at=self.now + .05)
         self.assertEqual(self.car.loc.index, 2)
 
-    def test_prediction_stops_at_horizon_and_delocalization(self):
+    def test_engine_prediction_uses_its_own_longer_horizon(self):
         self.fix(1, .2, self.now)
         self.car.loc.advance(1)
-        position = self.car.loc.progress()
+        display = self.car.loc._display_distance
+        engine = self.car.loc.progress()
         self.car.loc.advance(10)
-        self.assertAlmostEqual(self.car.loc.progress(), position)
-        self.car.on_message(P.MSG_VEHICLE_DELOCALIZED, None, received_at=self.now + 11)
+        # The lap/display prediction still expires after one second ...
+        self.assertAlmostEqual(self.car.loc._display_distance, display)
+        # ... but the engine keeps tracking for its own horizon.
+        self.assertGreater(self.car.loc.progress(), engine)
+        frozen = self.car.loc.progress()
+        self.car.loc.advance(10)
+        self.assertAlmostEqual(self.car.loc.progress(), frozen)
+        self.car.on_message(P.MSG_VEHICLE_DELOCALIZED, None, received_at=self.now + 30)
         position = self.car.loc.progress()
         self.car.loc.advance(.2)
         self.assertAlmostEqual(self.car.loc.progress(), position)
@@ -223,17 +230,17 @@ class PredictionTests(unittest.TestCase):
         self.game._track_laps(self.car, self.now + 20)
         self.assertEqual(self.car.laps, 0)
 
-    def test_late_forward_fix_cannot_rewind_display(self):
+    def test_late_forward_fix_cannot_rewind_the_display(self):
         self.fix(1, .2, self.now, speed=800)
         self.car.loc.advance(0, self.now + .2)
-        before = self.car.loc.progress()
+        before = self.car.loc._display_distance
         # Arrived at t+.1, processed after the t+.2 frame was displayed.
         self.fix(1, .25, self.now + .1, speed=800)
         self.car.loc.advance(0, self.now + .21)
-        self.assertGreaterEqual(self.car.loc.progress(), before)
+        self.assertGreaterEqual(self.car.loc._display_distance, before)
         self.assertEqual(self.car.loc.last_update, self.now + .1)
         self.car.loc.advance(0, self.now + .6)
-        self.assertGreater(self.car.loc.progress(), before)
+        self.assertGreater(self.car.loc._display_distance, before)
 
     def test_out_of_order_motion_does_not_rewind_or_invalidate_lap(self):
         self.fix(1, .7, self.now, speed=800)

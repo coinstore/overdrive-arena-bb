@@ -646,7 +646,7 @@ def parse_args(argv=None):
     ap.add_argument("--mode", choices=["battle", "race"], default="battle", help="battle = weapons and kills; race = laps only (default battle)")
     ap.add_argument("--laps", type=int, default=5, help="race mode: laps to win (default 5)")
     ap.add_argument("--ai-speed", type=int, default=None, help="override AI normal straight speed mm/s (default: scales with car limit; Hard uses full limit)")
-    ap.add_argument("--accel", type=int, default=600, help="acceleration mm/s^2 (default 600; higher may reboot cars with weak batteries)")
+    ap.add_argument("--accel", type=int, default=450, help="acceleration mm/s^2 (default 450, matching the player ramp; higher may reboot weak batteries)")
     ap.add_argument("--autostart", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--autoscan", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--run-for", type=float, default=0, help=argparse.SUPPRESS)

@@ -61,12 +61,12 @@ class BoostTests(unittest.TestCase):
         for _ in range(50):
             self.g._human(self.c, 0.1, self.now)
         self.assertEqual(self.c.cruise_speed, 2000)
-        self.c.command_speed.assert_called_with(2000, self.now)
+        self.c.command_speed.assert_called_with(2000, self.now, force=False)
         source.pressed.side_effect = lambda action: action == I.LIMIT_DOWN
         self.g._human(self.c, 0.1, self.now + 1)
         self.assertEqual(self.c.max_speed, 1900)
         self.assertEqual(self.c.cruise_speed, 1900)
-        self.c.command_speed.assert_called_with(1900, self.now + 1)
+        self.c.command_speed.assert_called_with(1900, self.now + 1, force=False)
         self.c.source = None
         self.assertEqual(self.c.max_speed, 800)
 
@@ -82,11 +82,11 @@ class BoostTests(unittest.TestCase):
         self.c.command_speed.reset_mock()
         self.g._human(self.c, 1.0, self.now + 1)
         self.assertAlmostEqual(self.c.cruise_speed, 450)
-        self.c.command_speed.assert_called_with(450, self.now + 1)
+        self.c.command_speed.assert_called_with(450.0, self.now + 1, force=True)
         source.brake.return_value = 1
         self.g._human(self.c, 1.0, self.now + 2)
         self.assertEqual(self.c.cruise_speed, 300)
-        self.c.command_speed.assert_called_with(300, self.now + 2)
+        self.c.command_speed.assert_called_with(300.0, self.now + 2, force=True)
 
 if __name__ == '__main__':
     unittest.main()

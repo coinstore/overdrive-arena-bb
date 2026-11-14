@@ -33,19 +33,26 @@ class PositionFilter:
                 return index, (distance - self.offsets[index]) / piece.length_mm
         return 0, 0.0
 
-    def predict(self, now):
-        if self.position is None:
+    def predict_distance(self, position, speed, start, now, horizon=None, lane=None):
+        """Propagate an arbitrary anchor; used by the engine tracker too."""
+        if position is None:
             return None
-        remaining = max(0.0, min(now, self.last_fix + self.HORIZON) - self.time)
-        position = self.position
+        horizon = self.HORIZON if horizon is None else horizon
+        lane = self.lane if lane is None else lane
+        remaining = max(0.0, min(now, start + horizon) - start)
         # Small integration steps handle changing lane radius across piece edges.
         while remaining > 1e-9:
             dt = min(remaining, 0.02)
             index, _ = self.pose(position)
             piece = self.track.pieces[index]
-            position += self.speed * dt * piece.length_mm / piece.length_at(self.lane)
+            position += speed * dt * piece.length_mm / piece.length_at(lane)
             remaining -= dt
         return position
+
+    def predict(self, now, horizon=None):
+        if self.position is None:
+            return None
+        return self.predict_distance(self.position, self.speed, self.time, now, horizon, self.lane)
 
     def observe(self, index, frac, speed, lane, now, reset=False, noise=45.0):
         measured = self.distance(index, frac)

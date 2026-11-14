@@ -39,6 +39,27 @@ class PlayerSpeedTests(unittest.TestCase):
         self.assertEqual(self.car.speed_sent(), 200)
         self.car.ble.fire.assert_called_once()
 
+
+    def test_sparse_ramp_sends_about_five_target_updates_per_second(self):
+        self.car.command_speed(300, self.now, force=True)
+        self.car.ble.fire.reset_mock()
+        for i in range(1, 51):
+            # 450 mm/s^2 at 50 Hz = 9 mm/s per step
+            self.car.command_speed(300 + 9 * i, self.now + i * .02)
+        self.assertLessEqual(self.car.ble.fire.call_count, 6)
+        self.assertGreaterEqual(self.car.ble.fire.call_count, 4)
+
+    def test_release_force_sends_the_exact_held_target_once(self):
+        self.car.command_speed(600, self.now, force=True)
+        self.car.ble.fire.reset_mock()
+        self.car.command_speed(690, self.now + .2)
+        self.car.ble.fire.reset_mock()
+        self.car.command_speed(690, self.now + .21, force=True)
+        self.car.ble.fire.assert_called_once()
+        self.car.ble.fire.reset_mock()
+        self.car.command_speed(690, self.now + .4)
+        self.car.ble.fire.assert_not_called()
+
     def test_hard_stop_clears_the_held_target(self):
         self.car.cruise_speed = 800
         self.car.hard_stop(self.now)

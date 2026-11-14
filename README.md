@@ -49,8 +49,9 @@ cars directly, with the protocol verified on real hardware (firmware 11866) and 
   replaces the saved map while scanning, with unresolved gaps marked `?`. Scan speed cycles through
   450, 500 and 400 mm/s on retries; cars losing track codes stop independently. Only a complete,
   geometrically closed loop replaces `track.json`.
-- **Live map**: a circuit-constrained Kalman position estimate combines measured speed, lane radius and
-  BLE position fixes. Prediction crosses piece boundaries and stops after one second without a fix.
+- **Live map**: a circuit-constrained Kalman position estimate combines measured speed, lane radius and BLE
+  position fixes. The display stays monotonic, while a separate engine estimate dead-reckons from the latest
+  code/bar for weapons and AI and extrapolates for up to three seconds without a fix.
 - **Map records**: best lap and fastest completed race saved in `records.json` and shown on the main
   screen in ranked car and controller tables. Personal records are saved even when they do not beat the
   overall map record. Human and AI records, modes, and race lengths are kept separate; car/controller
@@ -127,9 +128,9 @@ without a fix; silence holds lap progress instead of erasing it or inventing mor
 off-track reports and recovery reset the partial lap. The HUD shows current-lap progress and reset reasons.
 A complete forward circuit is required for a timed lap.
 
-The map smoothing, BLE-latency lead and backward-relocation threshold can be tuned on real hardware
-with `ARENA_CAR_SMOOTHING` (default 20), `ARENA_RENDER_LEAD` (seconds, default 0) and
-`ARENA_RENDER_RESET_BACK` (millimetres, default 500).
+The map smoothing, BLE-latency lead, engine prediction horizon and backward-relocation threshold can be
+tuned on real hardware with `ARENA_CAR_SMOOTHING` (default 20), `ARENA_RENDER_LEAD` (seconds, default 0),
+`ARENA_ENGINE_HORIZON` (seconds, default 3) and `ARENA_RENDER_RESET_BACK` (millimetres, default 500).
 
 | Action              | Xbox            | PS5           | Keyboard          |
 |---------------------|-----------------|---------------|-------------------|
@@ -156,9 +157,10 @@ initial limit; `--max-speed` sets the AI limit.
 
 The player ramp uses **450 mm/s²** acceleration and **900 mm/s²** braking. While moving, the target
 never drops below **300 mm/s**; this prevents the stutter and lost track codes at crawling speed.
-**B** remains the immediate emergency stop. Speed writes are capped at **10 Hz**. During a ramp the larger steps
-still follow the firmware acceleration, while the car keeps more BLE
-connection events for position notifications.
+**B** remains the immediate emergency stop. Speed writes are capped at **5 Hz**; the firmware interpolates
+between targets with the commanded acceleration. Larger host steps therefore still feel smooth, while the
+car keeps more BLE connection events for position notifications. Releasing the trigger sends one exact
+hold target immediately; constant speed sends nothing.
 
 Steering uses the four physical lane centers. A stick push changes one lane (LB/RB also snap one
 lane). Between track codes the localizer follows the car's own 0x41 current/target offsets, so it does
@@ -262,7 +264,7 @@ that car is the one most likely to reboot under hard acceleration. `LOW` below 3
 ```
 --max-speed N     AI speed ceiling mm/s (default 800; Extreme 2000)
 --player-max-speed N  controller/keyboard limit 200..2000 mm/s (default 2000)
---accel N         acceleration mm/s^2 (default 600; harder launches reboot cars with weak batteries)
+--accel N         acceleration mm/s^2 (default 450, matching the player ramp)
 --ai-speed N      optional Normal straight baseline (default scales with car limit)      --no-ai   unclaimed cars stay parked
 --ai-difficulty easy|normal|hard|extreme (default normal)
 --mode battle|race   --laps N                          --keyboard-only
