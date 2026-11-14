@@ -695,6 +695,25 @@ class CarLocalizer:
         self.engine_distance = anchor
         self.index, self.frac = index, frac
 
+    def freeze_at_start_bar(self, now: float) -> None:
+        """Place both the filter and the engine exactly on the start bar.
+
+        The firmware stop does not reliably produce a 0x36 actual=0 packet.
+        Without this, the engine keeps dead-reckoning with the last measured
+        speed after the physical car has already stopped.
+        """
+        bar = self.track.start_bar_frac
+        self.index, self.frac, self.sub_id = 0, bar, FINISH_ID
+        self.on_track = True
+        self.filter.position = self.filter.distance(0, bar)
+        self.filter.last_fix = self.filter.time = now
+        self.filter.speed = 0.0
+        self.filter.lane = self.lane_mm
+        self._display_distance, self._display_time = self.filter.position, now
+        self._sensor_pose = self._code_pose = (0, bar, FINISH_ID)
+        self._set_engine_anchor(0, bar, now, 0.0)
+        self.last_update = now
+
     def rebase_engine_speed(self, speed: float, now: float) -> None:
         """Keep the engine prediction continuous when a speed update arrives."""
         if self._engine_anchor is not None:

@@ -40,6 +40,22 @@ class GridTests(unittest.TestCase):
         self.c.stop_on_transition.assert_called_once()
         self.c.hard_stop.assert_not_called()
 
+
+    def test_firmware_stop_accepts_bar_after_engine_predicted_past_it(self):
+        self.c.grid_fw_stop = True
+        self.c.loc.index, self.c.loc.frac, self.c.loc.sub_id = 1, .9, 33
+        self.c.loc.on_track = True
+        self.g.grid_tick(0)
+        self.assertEqual(self.c.grid_state, 'placed')
+        self.assertFalse(self.c.grid_fw_stop)
+        self.assertEqual(self.c.loc.index, 0)
+        self.assertAlmostEqual(self.c.loc.frac, self.g.track.start_bar_frac)
+        # The engine must stay on the bar even without a 0x36 actual=0.
+        self.c.loc.advance(2.0, time.monotonic() + 2.0)
+        self.assertEqual(self.c.loc.index, 0)
+        self.assertAlmostEqual(self.c.loc.frac, self.g.track.start_bar_frac)
+        self.c.command_speed.assert_called_with(0, self.c.command_speed.call_args[0][1])
+
     def test_missing_bar_transition_does_not_park_beyond_line(self):
         self.c.loc.frac = 0.4
         self.g.grid_tick(0)
