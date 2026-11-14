@@ -48,15 +48,8 @@ class PositionFilter:
         return position
 
     def observe(self, index, frac, speed, lane, now, reset=False, noise=45.0):
-        # Speed updates may have advanced the filter with their own (later)
-        # timestamp.  A position measurement must never move the state clock
-        # backwards; use the current state time and treat the older fix as a
-        # delayed measurement.
-        delayed = max(0.0, self.time - now)
-        now = max(now, self.time)
         measured = self.distance(index, frac)
         predicted = self.predict(now)
-        noise = (noise ** 2 + (abs(speed) * delayed) ** 2) ** 0.5
         # A confirmed/commanded stop may outlast the countdown without breaking
         # continuity. Moving cars still lose confidence after the short horizon.
         discontinuity = reset or predicted is None or (abs(self.speed) > 0 and now - self.last_fix > self.HORIZON)

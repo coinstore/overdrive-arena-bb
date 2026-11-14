@@ -297,10 +297,7 @@ class CarState:
                 self.loc.on_track = False
         elif msg_id == P.MSG_SPEED_UPDATE and isinstance(decoded, P.SpeedUpdate) and self.loc is not None:
             self.loc.speed = float(decoded.actual_mm_s)
-            # Use the same measurement clock as position fixes; otherwise a
-            # speed packet can advance filter.time past the next fix time.
-            self.loc.filter.set_speed(self.loc.direction * self.loc.speed,
-                                      received_at - self.position_lead_s)
+            self.loc.filter.set_speed(self.loc.direction * self.loc.speed, received_at)
         if self.loc is not None:
             self.loc.on_message(msg_id, decoded, received_at=received_at,
                                 measurement_delay=self.position_lead_s)
