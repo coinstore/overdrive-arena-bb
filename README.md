@@ -114,10 +114,10 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
 
 BLE notifications are timestamped on arrival, before parsing or queueing. Position fixes are applied at
 that time and projected to the current frame; older out-of-order motion updates are ignored. The map
-renders the filter's current estimate with a short visual interpolation, so small backward corrections
-blend in instead of making the sprite jump or stand still. A 30 ms position lead (the measured BLE
-ping RTT is about 55 ms, so half is one hop) keeps the internal estimate aligned with the car; the
-firmware's position packet has no device timestamp, so this is a calibrated approximation.
+keeps a monotonic route coordinate: a correction that points backwards holds the sprite instead of
+dragging it back across the track. Only a direction change or a very large relocalization resets the
+display. A 30 ms measurement lead compensates the BLE hop; the firmware's position packet has no device
+timestamp, so this is a calibrated approximation.
 
 The lap counter uses one continuous, unwrapped route estimate. Every update and frame prediction is kept
 in timestamp order, so a forward circuit completes a lap even if the finish codes were missed or several
@@ -127,8 +127,9 @@ without a fix; silence holds lap progress instead of erasing it or inventing mor
 off-track reports and recovery reset the partial lap. The HUD shows current-lap progress and reset reasons.
 A complete forward circuit is required for a timed lap.
 
-The map smoothing and optional BLE-latency lead can be tuned on real hardware with
-`ARENA_CAR_SMOOTHING` (default 20) and `ARENA_RENDER_LEAD` (seconds, default 0).
+The map smoothing, BLE-latency lead and backward-relocation threshold can be tuned on real hardware
+with `ARENA_CAR_SMOOTHING` (default 20), `ARENA_RENDER_LEAD` (seconds, default 0) and
+`ARENA_RENDER_RESET_BACK` (millimetres, default 500).
 
 | Action              | Xbox            | PS5           | Keyboard          |
 |---------------------|-----------------|---------------|-------------------|
@@ -326,7 +327,8 @@ Messages are `[len][id][payload]`; see `anki/protocol.py`.
 - **0x36 speed update**: `desired u16, accel u16, actual u16`. **0x4D**: collision detected. **0x1B**: battery mV.
 - Piece ids: straights 36 39 40 48 51; curves 17 18 20 23 24 27; start piece = 34 (first half) then 33 with a
   bar between the halves (the finish line); intersection 10; jump ramp 43/58; landing 46/63; F&F specials 53 54 57.
-  Ids repeat within a track.
+  Ids repeat within a track. The halves are not equal: wheel distances are roughly 0.34 m + 0.22 m, so the
+  bar sits near 0.60 of the merged piece. The scanner records this as `start_bar_frac`; older maps default to 0.5.
 - Location ids encode lane and progress (`anki/data/offsetInfo.json`). The table's offset sign is opposite to
   the car's unless the reverse-parsing flag is set. Straights have 3 progress slots per lane, curves 2-3.
 - Geometry: a straight is 560 mm; a curve's centerline radius is ~280 mm (from wheel travel), so pieces lay
