@@ -3,8 +3,7 @@ import time
 import unittest
 
 from anki import protocol as P
-from anki.track import (CarLocalizer, MAX_RENDER_BACKWARD_MM, Piece, Track,
-                        START, STRAIGHT, locate)
+from anki.track import CarLocalizer, Piece, Track, START, STRAIGHT, locate
 
 
 class LocalizerLeadTests(unittest.TestCase):
@@ -37,8 +36,12 @@ class LocalizerLeadTests(unittest.TestCase):
         self.loc.filter.time = self.now
         self.loc.filter.speed = 0.0
         self.loc._display_distance = 1000.0
-        world = self.loc.render_world(self.now, raw=True)
-        index, frac = self.loc.filter.pose(1000.0 - MAX_RENDER_BACKWARD_MM)
+        world = self.loc.render_world(self.now)
+        index, frac = self.loc.filter.pose(1000.0)
+        self.assertEqual(world, self.track.world_point(index, frac, 0.0))
+        # A later backward correction must hold, not move the sprite back.
+        self.loc.filter.position = 800.0
+        world = self.loc.render_world(self.now + 0.02)
         self.assertEqual(world, self.track.world_point(index, frac, 0.0))
 
 

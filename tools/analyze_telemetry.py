@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from anki import protocol as P
 from anki.position_filter import PositionFilter
-from anki.track import CarLocalizer, MAX_RENDER_BACKWARD_MM, Track
+from anki.track import CarLocalizer, Track
 
 FRAME = 1 / 50
 
@@ -154,14 +154,11 @@ def analyse(path: Path, track_path: Path, lead: float):
                     elif loc.direction < 0 and delta > 1:
                         estimate_back.append(delta)
                 last_estimate = estimate
-            # Mirror render_world(raw=True)'s current backward clamp.
-            raw = loc.filter.predict(t)
+            # The production map target: render_world keeps its own
+            # monotonic route coordinate.
+            loc.render_world(t)
+            raw = getattr(loc, "_render_distance", None)
             if raw is not None:
-                if loc._display_distance is not None:
-                    if loc.direction > 0:
-                        raw = max(raw, loc._display_distance - MAX_RENDER_BACKWARD_MM)
-                    else:
-                        raw = min(raw, loc._display_distance + MAX_RENDER_BACKWARD_MM)
                 if last_render is not None:
                     delta = raw - last_render
                     if loc.direction > 0 and delta < -1:

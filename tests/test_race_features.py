@@ -357,6 +357,24 @@ class PredictionTests(unittest.TestCase):
         loc.on_message(P.MSG_LOCALIZATION_POSITION_UPDATE, position, received_at=100 + elapsed)
         self.assertEqual(loc.index, 2)
 
+    def test_position_after_transition_does_not_rewind_to_previous_code(self):
+        track = Track([Piece(34, START), Piece(17, TURN, 'R'),
+                       Piece(17, TURN, 'R'), Piece(39, STRAIGHT)])
+        loc = CarLocalizer(track)
+        loc.on_message(P.MSG_LOCALIZATION_POSITION_UPDATE,
+                       P.PositionUpdate(22, 17, 0, 800, 0), received_at=100)
+        self.assertEqual(loc.index, 1)
+        loc.advance(.2, 100.2)
+        loc.on_message(P.MSG_LOCALIZATION_TRANSITION_UPDATE,
+                       P.TransitionUpdate(*([0] * 11)), received_at=100.2)
+        self.assertEqual(loc.index, 2)
+        # frac 0.625 is far enough from the piece start that the old
+        # wrapped-bar heuristic cannot repair a stale code pose.
+        loc.on_message(P.MSG_LOCALIZATION_POSITION_UPDATE,
+                       P.PositionUpdate(21, 17, 0, 800, 0), received_at=100.3)
+        self.assertEqual(loc.index, 2)
+        self.assertAlmostEqual(loc.frac, .625)
+
     def test_queued_crossings_and_rendered_position_share_route_after_frame_stall(self):
         route = self.car.loc.filter
         origin = route.distance(0, .5)
@@ -434,6 +452,13 @@ class PredictionTests(unittest.TestCase):
             self.car.on_message(P.MSG_LOCALIZATION_TRANSITION_UPDATE, P.TransitionUpdate(*([0] * 11)),
                                 received_at=self.now + dt)
         self.assertEqual(self.car.loc.index, 2)
+
+    def test_stale_prediction_still_advances_after_a_bar(self):
+        self.fix(1, .2, self.now)
+        before = self.car.loc.index
+        self.car.on_message(P.MSG_LOCALIZATION_TRANSITION_UPDATE, P.TransitionUpdate(*([0] * 11)),
+                            received_at=self.now + .1)
+        self.assertEqual(self.car.loc.index, (before + 1) % len(self.track))
 
     def test_measurement_corrects_prediction_and_gates_teleport(self):
         filt = PositionFilter(self.track)

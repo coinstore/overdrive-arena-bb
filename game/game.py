@@ -40,7 +40,7 @@ def grid_lane_order(count: int) -> tuple[float, ...]:
 
 SPEED_SEND_MIN_DELTA = 15
 SPEED_KEEPALIVE_S = 0.5
-SPEED_SEND_INTERVAL_S = 0.05     # 20 Hz keeps the ramp smooth while still leaving BLE room for position fixes
+SPEED_SEND_INTERVAL_S = 0.1      # 10 Hz leaves BLE connection events for position notifications
 PLAYER_ACCEL_RATE = 450.0        # mm/s^2 at full R2/W; analog trigger travel scales this
 PLAYER_BRAKE_RATE = 900.0        # mm/s^2 at full L2/S
 MIN_PLAYER_SPEED = 300           # below this the cars stutter and miss track codes
@@ -297,7 +297,10 @@ class CarState:
                 self.loc.on_track = False
         elif msg_id == P.MSG_SPEED_UPDATE and isinstance(decoded, P.SpeedUpdate) and self.loc is not None:
             self.loc.speed = float(decoded.actual_mm_s)
-            self.loc.filter.set_speed(self.loc.direction * self.loc.speed, received_at)
+            # Use the same measurement clock as position fixes; otherwise a
+            # speed packet can advance filter.time past the next fix time.
+            self.loc.filter.set_speed(self.loc.direction * self.loc.speed,
+                                      received_at - self.position_lead_s)
         if self.loc is not None:
             self.loc.on_message(msg_id, decoded, received_at=received_at,
                                 measurement_delay=self.position_lead_s)
@@ -710,17 +713,18 @@ class Game:
                 c.apply_lane(now)
             # The bar between the pre-finish and finish halves is a transition that every
             # car reports in every lane at the same physical point.
-            on_bar = loc.index == 0 and loc.sub_id == FINISH_ID and 0.5 <= loc.frac < 0.6
+            bar = self.track.start_bar_frac if self.track else 0.5
+            on_bar = loc.index == 0 and loc.sub_id == FINISH_ID and bar <= loc.frac < bar + 0.1
             overshot = (loc.index == 0 and loc.frac >= 0.6) or (previous_index == 0 and loc.index != 0)
             if on_bar and in_lane:
                 if not c.grid_fw_stop:
                     c.hard_stop(now)   # fallback when the firmware stop was not armed
-                loc.frac, loc.sub_id = 0.5, FINISH_ID
-                loc.filter.position = loc.filter.distance(0, 0.5)
+                loc.frac, loc.sub_id = bar, FINISH_ID
+                loc.filter.position = loc.filter.distance(0, bar)
                 loc.filter.last_fix = loc.filter.time = now
                 loc.filter.speed = 0.0
                 loc._display_distance, loc._display_time = loc.filter.position, now
-                loc._sensor_pose = loc._code_pose = (0, 0.5, FINISH_ID)
+                loc._sensor_pose = loc._code_pose = (0, bar, FINISH_ID)
                 loc.last_update = now
                 c.grid_lane = lane_now
                 c.grid_state = "placed"
@@ -835,7 +839,8 @@ class Game:
             c.boost_ready_at = now + 3.0
             c.cruise_speed = 0.0
             if (c.grid_state == "placed" and c.map_position_known() and c.loc is not None
-                    and c.loc.direction > 0 and c.loc.index == 0 and 0.5 <= c.loc.frac < 0.6):
+                    and c.loc.direction > 0 and c.loc.index == 0
+                    and self.track.start_bar_frac <= c.loc.frac < self.track.start_bar_frac + 0.1):
                 # A car correctly parked on the bar starts its first timed lap at GO.
                 c.lap_start_t = now
                 c.lap_note = "timing"
@@ -874,7 +879,8 @@ class Game:
     def ranking(self) -> list["CarState"]:
         def progress(c: CarState) -> float:
             p = c.loc.progress() if c.map_position_known() and c.loc else None
-            return (p - 0.5) % len(self.track.pieces) if p is not None and self.track else -1.0
+            return ((p - self.track.start_bar_frac) % len(self.track.pieces)
+                    if p is not None and self.track else -1.0)
         if self.mode == "race":
             return sorted(self.cars, key=lambda c: (-c.laps, c.race_finish_s if c.race_finish_s is not None else float("inf"),
                                                     -progress(c), c.index))
@@ -956,7 +962,8 @@ class Game:
             c._lap_travel = 0.0
             return
         c._lap_travel += delta
-        to_line = (0.5 - prev) % n
+        bar = self.track.start_bar_frac if self.track else 0.5
+        to_line = (bar - prev) % n
         if delta > 0 and 0 < to_line <= delta + 1e-9:
             fraction = to_line / delta
             if self.track:
@@ -968,7 +975,7 @@ class Game:
                 total = sum(lengths)
                 travelled = (distance(p) - distance(prev)) % total
                 if travelled > 0:
-                    fraction = ((distance(.5) - distance(prev)) % total) / travelled
+                    fraction = ((distance(bar) - distance(prev)) % total) / travelled
             crossing_t = now if previous_t is None else previous_t + (now - previous_t) * fraction
             overshoot = delta - to_line
             if c.lap_start_t is not None and c._lap_travel - overshoot >= n - 0.15:

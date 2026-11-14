@@ -77,10 +77,27 @@ async def _record_one(device, model: str, args, out):
             event("abort", reason="car is not on the track or is on the charger")
             log.error("%s is not ready (status=%s)", car.model, status)
             return 1
-        if args.speed > 0:
+        if args.ramp_seconds:
+            t0 = time.monotonic()
+            while True:
+                elapsed = time.monotonic() - t0
+                if elapsed >= args.ramp_seconds:
+                    break
+                frac = elapsed / args.ramp_seconds
+                speed = int(round(args.ramp_from + (args.ramp_to - args.ramp_from) * frac))
+                event("speed", value=speed, accel=args.accel, ramp_hz=args.write_hz)
+                await car.set_speed(speed, args.accel)
+                await asyncio.sleep(1.0 / max(1.0, args.write_hz))
+        elif args.steps:
+            for speed in args.steps:
+                event("speed", value=speed, accel=args.accel, step_s=args.step_seconds)
+                await car.set_speed(speed, args.accel if speed else 2500)
+                await asyncio.sleep(args.step_seconds)
+        elif args.speed > 0:
             event("speed", value=args.speed, accel=args.accel)
             await car.set_speed(args.speed, args.accel)
             await asyncio.sleep(args.duration)
+        if args.ramp_seconds or args.steps or args.speed > 0:
             event("stop")
             await car.stop()
             await asyncio.sleep(1.0)
@@ -148,6 +165,13 @@ if __name__ == "__main__":
     ap.add_argument("--speed", type=int, default=400, help="constant speed in mm/s; 0 = only idle")
     ap.add_argument("--accel", type=int, default=600, help="firmware acceleration in mm/s^2")
     ap.add_argument("--duration", type=float, default=20.0, help="seconds of driving")
+    ap.add_argument("--steps", type=lambda v: [int(x) for x in v.split(",") if x.strip()],
+                    help="speed steps, e.g. 300,800,1200,800,400,0")
+    ap.add_argument("--step-seconds", type=float, default=3.0, help="seconds per --steps entry")
+    ap.add_argument("--ramp-from", type=int, default=300, help="ramp start speed")
+    ap.add_argument("--ramp-to", type=int, default=1200, help="ramp end speed")
+    ap.add_argument("--ramp-seconds", type=float, default=0, help="linear speed ramp duration; 0 disables")
+    ap.add_argument("--write-hz", type=float, default=20, help="speed writes per second during --ramp-seconds")
     ap.add_argument("--scan", type=float, default=5.0, help="BLE scan duration")
     ap.add_argument("--output", help="JSONL output path")
     a = ap.parse_args()

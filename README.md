@@ -155,8 +155,9 @@ initial limit; `--max-speed` sets the AI limit.
 
 The player ramp uses **450 mm/s²** acceleration and **900 mm/s²** braking. While moving, the target
 never drops below **300 mm/s**; this prevents the stutter and lost track codes at crawling speed.
-**B** remains the immediate emergency stop. Speed writes are capped at **20 Hz** so the ramp stays
-smooth without flooding the car's BLE link.
+**B** remains the immediate emergency stop. Speed writes are capped at **10 Hz**. During a ramp the larger steps
+still follow the firmware acceleration, while the car keeps more BLE
+connection events for position notifications.
 
 Steering uses the four physical lane centers. A stick push changes one lane (LB/RB also snap one
 lane). Between track codes the localizer follows the car's own 0x41 current/target offsets, so it does
