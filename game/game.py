@@ -38,7 +38,7 @@ def grid_lane_order(count: int) -> tuple[float, ...]:
         return (LANES[0], LANES[2], LANES[3])
     return LANES
 
-SPEED_SEND_MIN_DELTA = 40
+SPEED_SEND_MIN_DELTA = 15
 SPEED_KEEPALIVE_S = 0.5
 SPEED_SEND_INTERVAL_S = 0.2      # 5 Hz; the firmware interpolates between targets
 PLAYER_ACCEL_RATE = 450.0        # mm/s^2 at full R2/W; analog trigger travel scales this
