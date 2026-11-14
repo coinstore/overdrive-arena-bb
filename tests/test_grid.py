@@ -3,6 +3,7 @@ import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from anki import protocol as P
 from anki.track import Track, Piece, START, TURN
 from game.game import CarState, Game
 
@@ -48,13 +49,20 @@ class GridTests(unittest.TestCase):
         self.g.grid_tick(0)
         self.assertEqual(self.c.grid_state, 'placed')
         self.assertFalse(self.c.grid_fw_stop)
+        self.assertTrue(self.c.start_bar_locked)
         self.assertEqual(self.c.loc.index, 0)
         self.assertAlmostEqual(self.c.loc.frac, self.g.track.start_bar_frac)
         # The engine must stay on the bar even without a 0x36 actual=0.
         self.c.loc.advance(2.0, time.monotonic() + 2.0)
         self.assertEqual(self.c.loc.index, 0)
         self.assertAlmostEqual(self.c.loc.frac, self.g.track.start_bar_frac)
-        self.c.command_speed.assert_called_with(0, self.c.command_speed.call_args[0][1])
+        # A late speed/position packet during the countdown must not move it.
+        self.c.loc._set_engine_anchor(1, 0.0, time.monotonic(), 300.0)
+        self.c.on_message(P.MSG_SPEED_UPDATE, P.SpeedUpdate(300, 450, 300),
+                          received_at=time.monotonic())
+        self.assertEqual(self.c.loc.index, 0)
+        self.assertAlmostEqual(self.c.loc.frac, self.g.track.start_bar_frac)
+        self.assertEqual(self.c.command_speed.call_args[0][0], 0)
 
     def test_missing_bar_transition_does_not_park_beyond_line(self):
         self.c.loc.frac = 0.4

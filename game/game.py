@@ -155,6 +155,7 @@ class CarState:
         self.grid_prev_index: Optional[int] = None
         self.grid_fw_stop = False
         self.grid_fw_repeat_t = 0.0
+        self.start_bar_locked = False
         self.laps = 0
         self.lap_start_t: Optional[float] = None
         self.last_lap_s: Optional[float] = None
@@ -314,6 +315,13 @@ class CarState:
                 # The firmware stop was armed on the start piece; its next
                 # transition is the start bar.  Do not let a stale prediction
                 # choose the next piece instead.
+                self.loc.freeze_at_start_bar(received_at)
+            if self.start_bar_locked and msg_id in (
+                    P.MSG_LOCALIZATION_POSITION_UPDATE,
+                    P.MSG_LOCALIZATION_TRANSITION_UPDATE,
+                    P.MSG_SPEED_UPDATE):
+                # Late packets during the countdown must not move the known
+                # start-grid pose before the car is released.
                 self.loc.freeze_at_start_bar(received_at)
         if self.extra_listener is not None:
             self.extra_listener(msg_id, decoded, received_at=received_at)
@@ -610,6 +618,7 @@ class Game:
             c.lights_idle()
             if not c.participates() or self.track is None:
                 c.grid_state = ""
+                c.start_bar_locked = False
                 c.hard_stop(now)
                 continue
             c.grid_lane = lane_order[lane_i % len(lane_order)]
@@ -624,6 +633,7 @@ class Game:
             c.grid_prev_index = None
             c.grid_fw_stop = False
             c.grid_fw_repeat_t = 0.0
+            c.start_bar_locked = False
             c.cruise_speed = 0.0
             c.set_lane(c.grid_lane, now)
             c._last_lane_sent = 999.0     # force a lane command once the car is localized
@@ -739,6 +749,7 @@ class Game:
                 c.grid_state = "placed"
                 c.grid_fw_stop = False
                 c.grid_fw_repeat_t = 0.0
+                c.start_bar_locked = True
                 self.log(f"{c.name} on the start line (lane {lane_now:+.0f})", c.color)
             elif c.grid_state != "placed" and (on_bar or overshot):
                 c.grid_laps += 1
@@ -831,6 +842,7 @@ class Game:
                 # last grid fix is still the known start-line pose.
                 c.loc.last_update = now
                 c.ai_track_recovery = ""
+                c.start_bar_locked = False
             c.hp = MAX_HP
             c.kills = c.deaths = c.laps = 0
             c.last_lap_s = c.best_lap_s = None
@@ -880,6 +892,8 @@ class Game:
         self.phase = "idle"
         for c in self.cars:
             c.grid_state = ""
+            c.grid_fw_stop = False
+            c.start_bar_locked = False
         for c in self.cars:
             c.hard_stop(now)
 
