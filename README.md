@@ -50,7 +50,7 @@ cars directly, with the protocol verified on real hardware (firmware 11866) and 
   450, 500 and 400 mm/s on retries; cars losing track codes stop independently. Only a complete,
   geometrically closed loop replaces `track.json`.
 - **Live map**: a circuit-constrained Kalman position estimate combines measured speed, lane radius and BLE
-  position fixes. The display stays monotonic, while a separate engine estimate dead-reckons from the latest
+  position fixes. The display mirrors the engine exactly; the engine dead-reckons from the latest
   code/bar for weapons and AI and extrapolates for up to three seconds without a fix.
 - **Map records**: best lap and fastest completed race saved in `records.json` and shown on the main
   screen in ranked car and controller tables. Personal records are saved even when they do not beat the
@@ -115,10 +115,10 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
 
 BLE notifications are timestamped on arrival, before parsing or queueing. Position fixes are applied at
 that time and projected to the current frame; older out-of-order motion updates are ignored. The map
-keeps a monotonic route coordinate: a correction that points backwards holds the sprite instead of
-dragging it back across the track. Only a direction change or a very large relocalization resets the
-display. A 30 ms measurement lead compensates the BLE hop; the firmware's position packet has no device
-timestamp, so this is a calibrated approximation.
+draws exactly the engine position, including a backward correction when the estimator re-anchors; it
+does not hide estimator changes behind a separate monotonic display. A 30 ms measurement lead
+compensates the BLE hop; the firmware's position packet has no device timestamp, so this is a calibrated
+approximation.
 
 The lap counter uses one continuous, unwrapped route estimate. Every update and frame prediction is kept
 in timestamp order, so a forward circuit completes a lap even if the finish codes were missed or several
@@ -128,9 +128,8 @@ without a fix; silence holds lap progress instead of erasing it or inventing mor
 off-track reports and recovery reset the partial lap. The HUD shows current-lap progress and reset reasons.
 A complete forward circuit is required for a timed lap.
 
-The map smoothing, BLE-latency lead, engine prediction horizon and backward-relocation threshold can be
-tuned on real hardware with `ARENA_CAR_SMOOTHING` (default 20), `ARENA_RENDER_LEAD` (seconds, default 0),
-`ARENA_ENGINE_HORIZON` (seconds, default 3) and `ARENA_RENDER_RESET_BACK` (millimetres, default 500).
+The engine prediction horizon can be tuned with `ARENA_ENGINE_HORIZON` (seconds, default 3). The map has
+no separate smoothing or render lead: it shows the engine state directly.
 
 | Action              | Xbox            | PS5           | Keyboard          |
 |---------------------|-----------------|---------------|-------------------|

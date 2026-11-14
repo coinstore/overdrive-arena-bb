@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import math
-import os
 import random
 import time
 from collections import deque
@@ -34,16 +33,6 @@ LANES_MM = (-68.0, -23.0, 23.0, 68.0)
 
 BATTERY_COLORS = {"ok": OK, "weak": WARN, "low": WARN, "critical": BAD, "unknown": FAINT, "charging": (120, 200, 255)}
 
-# A higher rate follows the filter more closely. The filter already smooths,
-# so the renderer only needs a short interpolation to hide small corrections.
-# Environment override is useful for tuning on real hardware.
-CAR_SMOOTHING_RATE = float(os.environ.get("ARENA_CAR_SMOOTHING", "20"))
-
-
-def lerp(a: float, b: float, t: float) -> float:
-    return a + (b - a) * t
-
-
 def with_alpha(color, a: int) -> tuple:
     return (color[0], color[1], color[2], max(0, min(255, int(a))))
 
@@ -70,7 +59,7 @@ def draw_battery_icon(surface, x: int, y: int, w: int, h: int, pct: Optional[int
 
 
 class CarView:
-    """Per-car display state: smoothed position and a fading trail."""
+    """Per-car display state: exact engine position and a fading trail."""
 
     def __init__(self):
         self.x: Optional[float] = None
@@ -80,12 +69,7 @@ class CarView:
 
     def update(self, target: Optional[tuple[float, float]], now: float, dt: float, hp: int) -> None:
         if target is not None:
-            if self.x is None or self.y is None or math.hypot(target[0] - self.x, target[1] - self.y) > 400:
-                self.x, self.y = target
-            else:
-                k = min(1.0, dt * CAR_SMOOTHING_RATE)
-                self.x = lerp(self.x, target[0], k)
-                self.y = lerp(self.y, target[1], k)
+            self.x, self.y = target
             if not self.trail or math.hypot(self.x - self.trail[-1][0], self.y - self.trail[-1][1]) > 12:
                 self.trail.append((self.x, self.y, now))
         self.hp_lag = max(hp, self.hp_lag - dt * 60) if self.hp_lag > hp else float(hp)

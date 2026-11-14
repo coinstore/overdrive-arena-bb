@@ -1,4 +1,4 @@
-"""Measurement-time lead and render-only backward clamp."""
+"""Measurement time and exact engine-to-display mapping."""
 import time
 import unittest
 
@@ -25,10 +25,8 @@ class LocalizerLeadTests(unittest.TestCase):
         self.assertAlmostEqual(self.loc.last_update, self.now)
         self.assertIsNotNone(self.loc.filter.position)
 
-    def test_render_target_does_not_jump_far_backwards(self):
+    def test_render_shows_the_engine_position_exactly(self):
         self.loc.on_track = True
-        self.loc.index = 0
-        self.loc.frac = 0.1
         self.loc.lane_mm = 0.0
         self.loc.direction = 1
         self.loc.filter.position = 500.0
@@ -36,12 +34,15 @@ class LocalizerLeadTests(unittest.TestCase):
         self.loc.filter.time = self.now
         self.loc.filter.speed = 0.0
         self.loc._display_distance = 1000.0
+        self.loc._set_engine_anchor(0, 0.8, self.now, 0.0)
         world = self.loc.render_world(self.now)
-        index, frac = self.loc.filter.pose(1000.0)
+        index, frac = self.loc.filter.pose(0.8 * 560.0)
         self.assertEqual(world, self.track.world_point(index, frac, 0.0))
-        # A later backward correction must hold, not move the sprite back.
-        self.loc.filter.position = 800.0
+        # A backward engine correction is visible immediately; the display
+        # must not keep the old monotonic pose.
+        self.loc._set_engine_anchor(0, 0.4, self.now + 0.02, 0.0)
         world = self.loc.render_world(self.now + 0.02)
+        index, frac = self.loc.filter.pose(0.4 * 560.0)
         self.assertEqual(world, self.track.world_point(index, frac, 0.0))
 
 

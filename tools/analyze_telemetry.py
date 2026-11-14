@@ -154,10 +154,10 @@ def analyse(path: Path, track_path: Path, lead: float):
                     elif loc.direction < 0 and delta > 1:
                         estimate_back.append(delta)
                 last_estimate = estimate
-            # The production map target: render_world keeps its own
-            # monotonic route coordinate.
+            # The display now mirrors the engine, so this is the route
+            # coordinate the map actually draws.
             loc.render_world(t)
-            raw = getattr(loc, "_render_distance", None)
+            raw = getattr(loc, "engine_distance", None)
             if raw is not None:
                 if last_render is not None:
                     delta = raw - last_render
@@ -189,8 +189,8 @@ def analyse(path: Path, track_path: Path, lead: float):
               f"p95={errs[int(.95 * len(errs))]:.0f}mm max={max(errs):.0f}mm "
               f"rejects={transition_rejects}/{len(errs)}")
     print(f"filter resets: {filter_resets}")
-    print(f"estimate backward steps: {stats(estimate_back)}")
-    print(f"render backward steps:   {stats(render_back)}")
+    print(f"filter backward steps:   {stats(estimate_back)}")
+    print(f"engine/display backward: {stats(render_back)}")
     print(f"fix backward jumps:      {stats(fix_back)}")
     print(f"index backward jumps:    {stats(index_back)}")
     print(f"max fix age: {max_age:.2f}s")

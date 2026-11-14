@@ -30,10 +30,8 @@ DATA_FILE = Path(__file__).parent / "data" / "offsetInfo.json"
 # (instead of the monotonic lap estimate) lets small backward corrections blend
 # in smoothly. A small lead compensates BLE notification latency; both can be
 # tuned on real hardware via the environment.
-RENDER_LEAD_S = float(os.environ.get("ARENA_RENDER_LEAD", "0.0"))
 ENGINE_HORIZON_S = float(os.environ.get("ARENA_ENGINE_HORIZON", "3.0"))
 LANE_FEEDBACK_ENABLED = os.environ.get("ARENA_LANE_FEEDBACK", "1") != "0"
-RENDER_RESET_BACK_MM = float(os.environ.get("ARENA_RENDER_RESET_BACK", "500"))
 
 CELL_MM = 560.0                       # one straight piece
 CURVE_RADIUS_MM = CELL_MM / 2         # centerline radius, measured from wheel travel (~280 mm)
@@ -481,8 +479,6 @@ class CarLocalizer:
         self._prediction_t = 0.0
         self._display_distance = None
         self._display_time = None
-        self._render_distance = None
-        self._render_epoch = None
         self.engine_distance = None
         self._engine_anchor = None
         self._engine_anchor_t = 0.0
@@ -797,42 +793,14 @@ class CarLocalizer:
             return None
         return self.track.world_point(self.index, self.frac, self.lane_mm)
 
-    def render_world(self, now: float, lead: Optional[float] = None) -> Optional[tuple[float, float]]:
-        """Pose for the map, with a monotonic route coordinate.
-
-        The filter may correct backwards after a sparse code, a late bar or a
-        bad prediction.  A real car does not jump backwards on a forward lap,
-        so the map holds its previous route coordinate and lets the next good
-        prediction continue from there.  Direction changes and relocalizations
-        reset the display pose; otherwise the sprite can never move backwards
-        just because the estimator changed its mind.
-        """
+    def render_world(self, now: float) -> Optional[tuple[float, float]]:
+        """Pose for the map: exactly the engine's current position."""
         if not self.on_track or self.filter.position is None:
             return None
-        lead = RENDER_LEAD_S if lead is None else lead
-        target = self.engine_at(now + lead)
-        if target is None:
-            target = self.filter.predict(now + lead, ENGINE_HORIZON_S)
-        if target is None:
+        self._update_engine(now)
+        if self.index is None:
             return None
-        if self._render_epoch != self.route_epoch or self._render_distance is None:
-            base = self._display_distance if self._display_distance is not None else target
-            self._render_distance = max(base, target) if self.direction > 0 else min(base, target)
-            self._render_epoch = self.route_epoch
-        elif self.direction > 0:
-            if target > self._render_distance:
-                self._render_distance = target
-            elif target < self._render_distance - RENDER_RESET_BACK_MM:
-                # A very large relocation is not a physical backward move;
-                # accept it instead of holding a wrong pose for a long time.
-                self._render_distance = target
-        else:
-            if target < self._render_distance:
-                self._render_distance = target
-            elif target > self._render_distance + RENDER_RESET_BACK_MM:
-                self._render_distance = target
-        index, frac = self.filter.pose(self._render_distance)
-        return self.track.world_point(index, frac, self.lane_mm)
+        return self.track.world_point(self.index, self.frac, self.lane_mm)
 
     def heading(self) -> float:
         if self.index is None:
