@@ -500,7 +500,7 @@ class PredictionTests(unittest.TestCase):
         self.game.retry_recovery(source)
         start = self.car.ai_track_recovery_t
         self.game._human(self.car, .02, start + .1)
-        self.car.command_speed.assert_called_with(250, start + .1)
+        self.car.command_speed.assert_called_with(300, start + .1)
         self.game._human(self.car, .02, start + 1.6)
         self.car.command_speed.assert_called_with(0, start + 1.6)
         self.game.retry_recovery(source)

@@ -60,13 +60,13 @@ class GridTests(unittest.TestCase):
         self.c.loc.on_track = False
         with patch('game.game.time.monotonic', return_value=1000):
             self.assertFalse(self.g.grid_tick(0))
-        self.c.command_speed.assert_called_with(250, 1000)
+        self.c.command_speed.assert_called_with(300, 1000)
         with patch('game.game.time.monotonic', return_value=1002):
             self.assertFalse(self.g.grid_tick(0))
         self.c.command_speed.assert_called_with(0, 1002)
         with patch('game.game.time.monotonic', return_value=1350):
             self.assertFalse(self.g.grid_tick(0))
-        self.c.command_speed.assert_called_with(250, 1350)
+        self.c.command_speed.assert_called_with(300, 1350)
         self.assertTrue(self.c.participates())
 
     def test_recovered_car_can_become_ready(self):

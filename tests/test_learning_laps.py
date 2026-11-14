@@ -163,7 +163,7 @@ class LearningLapTests(unittest.TestCase):
         self.c.loc.last_update = now - 2
         self.c.command_speed = Mock()
         self.assertTrue(self.g._recover_ai_track(self.c, now))
-        self.c.command_speed.assert_called_with(250, now)
+        self.c.command_speed.assert_called_with(300, now)
         self.g._recover_ai_track(self.c, now + 1.6)
         self.assertEqual(self.c.ai_track_recovery, 'waiting')
         self.c.command_speed.assert_called_with(0, now + 1.6)
@@ -191,7 +191,7 @@ class LearningLapTests(unittest.TestCase):
         self.g.retry_ai_recovery()
         start = self.c.ai_track_recovery_t
         self.g._recover_ai_track(self.c, start + 0.1)
-        self.c.command_speed.assert_called_with(250, start + 0.1)
+        self.c.command_speed.assert_called_with(300, start + 0.1)
         self.c.loc.on_track = True
         self.c.loc.last_update = start + 0.2
         self.assertFalse(self.g._recover_ai_track(self.c, start + 0.3))

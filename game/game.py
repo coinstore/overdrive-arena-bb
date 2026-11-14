@@ -71,7 +71,7 @@ DEATH_STOP_S = 3.0
 GRID_SPEED = 320            # speed used to drive to the start line
 GRID_RETRY_SPEED = 500      # a missed grid attempt costs a full lap; still quick, but lane changes stay reliable
 GRID_APPROACH_FRAC = 0.0    # crawl from the start of the last piece, so deceleration is early and even
-GRID_CRAWL = 250            # low, but still reads the middle start code reliably
+GRID_CRAWL = 300            # 250 mm/s loses track codes on some pieces
 GRID_RECOVERY_DRIVE_S = 1.5  # bounded slow search, followed by a pause before retrying
 GRID_RECOVERY_PAUSE_S = 2.0
 
@@ -654,7 +654,7 @@ class Game:
                 cycle = (now - c.grid_recovery_t) % (GRID_RECOVERY_DRIVE_S + GRID_RECOVERY_PAUSE_S)
                 searching = cycle < GRID_RECOVERY_DRIVE_S
                 c.grid_state = "recovering" if searching else "recovery pause"
-                c.command_speed(min(250, c.max_speed) if searching else 0, now)
+                c.command_speed(min(300, c.max_speed) if searching else 0, now)
                 continue
             if c.grid_recovery_t is not None:
                 c.grid_recovery_t = None
@@ -1406,7 +1406,7 @@ class Game:
             c.ai_track_recovery_t = now
             c.ai_manual_track_retry = False
             # A positive delocalized report means stop; missing telemetry alone
-            # gets one 1.5 s search at 250 mm/s. Never keep driving blindly.
+            # gets one 1.5 s search at 300 mm/s. Never keep driving blindly.
             can_probe = available and loc.on_track and (c.speed_sent() > 0 or not c.ai_has_driven)
             c.ai_track_recovery = "searching" if can_probe else "waiting"
             c._prev_progress = c.lap_start_t = None
@@ -1419,7 +1419,7 @@ class Game:
             c.ai_track_recovery = "waiting"
             self.log(f"{c.name}: stopped; put back on track, press R / right-stick click", WARN_COLOR)
         if c.car.connected:
-            c.command_speed(min(250, c.max_speed) if c.ai_track_recovery == "searching" else 0, now)
+            c.command_speed(min(300, c.max_speed) if c.ai_track_recovery == "searching" else 0, now)
         else:
             c._last_speed_sent = 0
         return True

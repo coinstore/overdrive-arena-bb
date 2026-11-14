@@ -100,7 +100,7 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
    - **RACE** (Start / Options / Space / click): enabled with at least one connected player or AI car off its charger. Leave all cars unclaimed for an AI-only race. The controllers legend and
      the "players / AI / parked" line tell you who drives what.
 3. **Starting grid**: each participant drives to the start line in its own lane (turning around first if it
-   faces the wrong way), crawls the last piece at 250 mm/s and asks the car's firmware to brake itself on
+   faces the wrong way), crawls the last piece at 300 mm/s and asks the car's firmware to brake itself on
    the start-line bar. Because the car stops on the shared bar event, every car lines up at the same
    physical point without the Bluetooth round-trip. Cars that overshoot the bar do a full lap at 500 mm/s
    before trying again, and a car may settle in another free lane instead of repeating a lane change.
@@ -110,7 +110,7 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
    After a finish, **Start / Options** starts another grid and countdown with the same selections.
    Replace an off-track car, then press **right-stick / R3 / R**, or click **RECOVER**. The controller
    retries its player's car plus waiting AI; the on-screen button retries all waiting cars. Each search
-   is limited to 1.5 seconds at up to 250 mm/s. Brake or emergency stop cancels a player's search.
+   is limited to 1.5 seconds at up to 300 mm/s. Brake or emergency stop cancels a player's search.
 
 BLE notifications are timestamped on arrival, before parsing or queueing. Position fixes are applied at
 that time and projected to the current frame; older out-of-order motion updates are ignored. The map
@@ -213,7 +213,7 @@ oscillation, and lost localization cannot create a shortcut lap. Already complet
 ### Off-track AI recovery
 
 An explicit off-track report stops that AI immediately. If track messages go stale instead,
-it tries reading the track at 250 mm/s for at most 1.5 seconds, then stops. There are no endless retries.
+it tries reading the track at 300 mm/s for at most 1.5 seconds, then stops. There are no endless retries.
 Put a stopped car back on the track and press **R** (or click the right stick) to give waiting AI cars
 one short detection attempt. Fresh track codes resume driving automatically; wrong-way recovery still
 applies. Cars on chargers or with lost connections do not search. Recovery invalidates the current lap.
