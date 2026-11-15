@@ -2,10 +2,10 @@
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from anki.track import Piece, Track, START, STRAIGHT, TURN
-from game.game import CarState, Game
+from game.game import CarState, Game, MAX_HP
 
 
 class LearningLapTests(unittest.TestCase):
@@ -176,6 +176,35 @@ class LearningLapTests(unittest.TestCase):
         self.c.command_speed.assert_called_with(0, now + 1.6)
         self.g._recover_ai_track(self.c, now + 20)
         self.c.command_speed.assert_called_with(0, now + 20)
+
+    def test_death_stop_does_not_enter_track_recovery(self):
+        now = self.now
+        self.c.loc.last_update = now - 2
+        self.c.dead_until = now + 3
+        self.c.hp = 0
+        self.c.command_speed = Mock()
+        self.assertTrue(self.g._recover_ai_track(self.c, now))
+        self.assertEqual(self.c.ai_track_recovery, '')
+        self.c.command_speed.assert_called_once_with(0, now)
+
+    def test_respawn_ai_searches_for_track_without_user_retry(self):
+        self.c.ai = True
+        self.c.hp = 0
+        self.c.dead_until = 0.0
+        self.c.loc.last_update = self.now - 2
+        self.c.command_speed = Mock()
+        self.c.lights_idle = Mock()
+        self.g.running = True
+        with patch('game.game.time.monotonic', return_value=self.now):
+            self.g.tick(0.016)
+        self.assertEqual(self.c.hp, MAX_HP)
+        self.assertEqual(self.c.ai_track_recovery, 'searching')
+        self.c.command_speed.assert_called_with(300, self.now)
+
+        # The first fresh code after the crawl resumes normal driving.
+        self.c.loc.last_update = self.now + 0.1
+        self.assertFalse(self.g._recover_ai_track(self.c, self.now + 0.2))
+        self.assertEqual(self.c.ai_track_recovery, '')
 
     def test_reported_off_track_stops_immediately_and_learns_once(self):
         now = time.monotonic()

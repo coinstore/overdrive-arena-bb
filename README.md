@@ -240,7 +240,9 @@ oscillation, and lost localization cannot create a shortcut lap. Already complet
 An explicit off-track report stops that AI immediately. If track messages go stale instead,
 it tries reading the track at 300 mm/s for at most 1.5 seconds, then stops. There are no endless retries.
 Put a stopped car back on the track and press **R** (or click the right stick) to give waiting AI cars
-one short detection attempt. Fresh track codes resume driving automatically; wrong-way recovery still
+one short detection attempt. An AI car that respawns after being destroyed gets that bounded search
+automatically, because its 3-second stop makes the previous track codes stale; no **R** press is needed.
+Fresh track codes resume driving automatically; wrong-way recovery still
 applies. Cars on chargers or with lost connections do not search. Recovery invalidates the current lap.
 Leaving a curve and reporting off-track also lowers the learned corner limit once per incident, including a report that arrives after a search has begun or between rendered frames. Missing telemetry alone does not count as a cornering failure.
 

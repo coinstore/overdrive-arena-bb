@@ -1520,6 +1520,12 @@ class Game:
                 c.lights_idle()
                 self.effect("spawn", c.world(), c.color, 0.8)
                 self.log(f"{c.name} respawned", c.color)
+                if c.ai:
+                    # The 3 s stop leaves the last track code stale. Give the
+                    # AI a fresh bounded search instead of waiting for R.
+                    c.ai_track_recovery = "searching"
+                    c.ai_track_recovery_t = now
+                    c.ai_manual_track_retry = False
             if c.source is not None and c.source.alive():
                 self._human(c, dt, now)
             elif c.ai:
@@ -1867,6 +1873,11 @@ class Game:
 
     def _recover_ai_track(self, c: CarState, now: float) -> bool:
         """Return True while normal driving must yield to track recovery."""
+        if c.is_dead(now):
+            # A destruction stop is intentional, not a lost track. Do not turn
+            # its stale codes into a "waiting for R" recovery state.
+            c.command_speed(0, now)
+            return True
         loc = c.loc
         available = c.car.connected and not c.charging and loc is not None
         reported = c._offtrack_reports != c._ai_offtrack_seen
