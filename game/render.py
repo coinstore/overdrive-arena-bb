@@ -241,7 +241,7 @@ class MapView:
             for dy in (-W / 2 + 3, W / 2 - 3):
                 hx, hy = pt(L / 2, dy)
                 pygame.draw.circle(screen, (255, 250, 210), (int(hx), int(hy)), 2)
-            label = small.render(c.name if c.localized() else f"{c.name} · stopped", True, TEXT)
+            label = small.render(c.name if c.localized() else f"{c.name} · stopped", True, c.color)
             lx, ly = x - label.get_width() // 2, y - 30
             pygame.draw.rect(screen, (0, 0, 0), (lx - 4, ly - 1, label.get_width() + 8, label.get_height() + 2), border_radius=4)
             screen.blit(label, (lx, ly))
