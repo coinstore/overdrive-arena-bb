@@ -97,11 +97,10 @@ class FollowingTests(unittest.TestCase):
                                180.0, delta=1e-6)
 
 
-    def test_one_full_lap_apart_is_not_a_following_pair(self):
+    def test_distant_car_is_not_a_following_pair(self):
         now = time.monotonic()
         self.rear.loc.set_engine_position(500.0, now, 700.0)
-        # One whole lap is not proximity, even though the modulo pose is equal.
-        self.leader.loc.engine_distance = 500.0 + 2800.0
+        self.leader.loc.engine_distance = 500.0 + 1200.0
         self.leader.loc._engine_anchor = self.leader.loc.engine_distance
         self.leader.loc.index, self.leader.loc.frac = self.leader.loc.filter.pose(
             self.leader.loc.engine_distance)
@@ -109,6 +108,43 @@ class FollowingTests(unittest.TestCase):
         self.game._reconcile_vehicle_positions(now)
         self.assertIsNone(self.rear.following)
         self.assertAlmostEqual(self.rear.loc.engine_distance, before)
+
+    def test_lap_origin_offset_still_links_when_physically_behind(self):
+        now = time.monotonic()
+        length = self.leader.loc.filter.length
+        self.leader.loc.engine_distance = 1000.0
+        # The follower has driven almost one whole lap more, but is physically
+        # only 300 mm behind the leader.
+        self.rear.loc.engine_distance = 1000.0 + length - 300.0
+        for car in (self.leader, self.rear):
+            car.loc._engine_anchor = car.loc.engine_distance
+            car.loc.index, car.loc.frac = car.loc.filter.pose(car.loc.engine_distance)
+            car.loc.last_update = now
+        self.rear.loc._engine_speed = 700.0
+        self.leader.loc._engine_speed = 400.0
+        self.game._reconcile_vehicle_positions(now)
+        self.assertIs(self.rear.following, self.leader)
+        self.assertAlmostEqual(self.game._following_gap(self.rear, self.leader),
+                               300.0, delta=1e-6)
+
+    def test_clamp_keeps_follower_lap_origin_continuous(self):
+        now = time.monotonic()
+        length = self.leader.loc.filter.length
+        self.leader.loc.engine_distance = 1000.0
+        self.rear.loc.engine_distance = 1000.0 + length - 100.0
+        for car in (self.leader, self.rear):
+            car.loc._engine_anchor = car.loc.engine_distance
+            car.loc.index, car.loc.frac = car.loc.filter.pose(car.loc.engine_distance)
+            car.loc.last_update = now
+        self.rear.loc._engine_speed = 700.0
+        self.leader.loc._engine_speed = 400.0
+        self.game._reconcile_vehicle_positions(now)
+        self.assertIs(self.rear.following, self.leader)
+        self.assertAlmostEqual(self.game._following_gap(self.rear, self.leader),
+                               CAR_MIN_GAP_MM, delta=1e-6)
+        # Still in the follower's own (one lap ahead) continuous frame.
+        self.assertAlmostEqual(self.rear.loc.engine_distance,
+                               1000.0 + length - CAR_MIN_GAP_MM, delta=1e-6)
 
 
     def test_lane_change_releases_link(self):

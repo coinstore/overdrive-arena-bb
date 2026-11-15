@@ -1127,9 +1127,12 @@ class Game:
         a, b = rear.loc.engine_distance, leader.loc.engine_distance
         if a is None or b is None:
             return None
-        # Keep the unwrapped distance.  A modulo-only gap would make a car one
-        # whole lap behind look as if it were directly behind the leader.
-        return b - a
+        # engine_distance is the total distance each car has travelled, so the
+        # two origins can differ by whole laps.  Physical following distance is
+        # the shortest signed distance on the loop; otherwise a faster follower
+        # that has driven one lap more looks a whole lap away and slips through.
+        length = rear.loc.filter.length
+        return (b - a + length / 2) % length - length / 2
 
     def _reconcile_vehicle_positions(self, now: float) -> None:
         """Keep same-lane cars in physical order, independent of their speed.

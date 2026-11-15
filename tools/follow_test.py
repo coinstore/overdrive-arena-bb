@@ -142,7 +142,7 @@ async def run(args) -> int:
                 linked_before = follower.following is leader
                 game._reconcile_vehicle_positions(now)
                 elapsed = now - t0
-                if elapsed - last_log >= 0.1:
+                if elapsed - last_log >= args.log_interval:
                     last_log = elapsed
                     gap = game._following_gap(follower, leader)
                     row = {
@@ -224,6 +224,7 @@ if __name__ == "__main__":
     ap.add_argument("--leader-speed", type=int, default=400)
     ap.add_argument("--follower-speed", type=int, default=700)
     ap.add_argument("--duration", type=float, default=10.0)
+    ap.add_argument("--log-interval", type=float, default=0.1)
     ap.add_argument("--output")
     args = ap.parse_args()
     sys.exit(asyncio.run(run(args)))
