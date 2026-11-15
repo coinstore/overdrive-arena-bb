@@ -31,7 +31,14 @@ MAX_ABS_OFFSET = 68.0
 CAR_MIN_GAP_MM = float(os.environ.get("ARENA_CAR_GAP", "180"))
 FOLLOW_LINK_MM = float(os.environ.get("ARENA_FOLLOW_LINK", "700"))
 FOLLOW_RELEASE_MM = float(os.environ.get("ARENA_FOLLOW_RELEASE", "1100"))
-LANE_OVERLAP_MM = float(os.environ.get("ARENA_LANE_OVERLAP", "30"))
+LANE_OVERLAP_MM = float(os.environ.get("ARENA_LANE_OVERLAP", "15"))
+# A following link is only trusted while the leader's own position is fresh.
+# Otherwise the follower would be pinned behind a frozen ghost position and
+# jump forward when its next real position update arrives.
+FOLLOW_STALE_S = float(os.environ.get("ARENA_FOLLOW_STALE", "1.5"))
+# A single localizer re-anchor can jump the gap by more than a metre.  Do not
+# drop a valid following link on one sample; require the large gap to persist.
+FOLLOW_RELEASE_HOLD_S = float(os.environ.get("ARENA_FOLLOW_RELEASE_HOLD", "0.8"))
 
 
 def grid_lane_order(count: int) -> tuple[float, ...]:
@@ -232,6 +239,7 @@ class CarState:
         self.desired_lane: Optional[float] = None   # sticky lane goal (snap / AI / grid)
         self.following = None                         # car ahead in the same lane
         self.following_gap_mm: Optional[float] = None
+        self._follow_release_since: Optional[float] = None
 
     # ---- identity ----
     @property
@@ -1095,11 +1103,15 @@ class Game:
                 c._lap_travel = overshoot
 
     # ---- physical following -------------------------------------------------
-    def _follow_pair_ok(self, rear: CarState, leader: CarState) -> bool:
+    def _follow_pair_ok(self, rear: CarState, leader: CarState,
+                        now: Optional[float] = None) -> bool:
         if rear is leader or rear.loc is None or leader.loc is None:
             return False
         a, b = rear.loc, leader.loc
         if not (a.on_track and b.on_track and a.index is not None and b.index is not None):
+            return False
+        now = time.monotonic() if now is None else now
+        if now - b.last_update > FOLLOW_STALE_S:
             return False
         if rear.charging or leader.charging or a.direction != b.direction:
             return False
@@ -1117,11 +1129,7 @@ class Game:
             return None
         # Keep the unwrapped distance.  A modulo-only gap would make a car one
         # whole lap behind look as if it were directly behind the leader.
-        raw = b - a
-        if abs(raw) > FOLLOW_RELEASE_MM:
-            return None
-        length = rear.loc.filter.length
-        return (raw + length / 2) % length - length / 2
+        return b - a
 
     def _reconcile_vehicle_positions(self, now: float) -> None:
         """Keep same-lane cars in physical order, independent of their speed.
@@ -1137,24 +1145,40 @@ class Game:
             for c in cars:
                 c.following = None
                 c.following_gap_mm = None
+                c._follow_release_since = None
             return
         for c in cars:
             leader = c.following
             if leader is None:
+                c._follow_release_since = None
                 continue
             gap = self._following_gap(c, leader)
-            if (not self._follow_pair_ok(c, leader) or gap is None
-                    or abs(gap) > FOLLOW_RELEASE_MM):
+            # A negative gap means the follower appears ahead; that can be a
+            # stale/quantized position update and must not be allowed to flip
+            # the physical order.  Only a gap clearly *behind* can release the
+            # link, and only after it has persisted across localizer jumps.
+            if not self._follow_pair_ok(c, leader, now) or gap is None:
                 c.following = None
                 c.following_gap_mm = None
+                c._follow_release_since = None
+            elif gap > FOLLOW_RELEASE_MM:
+                if c._follow_release_since is None:
+                    c._follow_release_since = now
+                if now - c._follow_release_since >= FOLLOW_RELEASE_HOLD_S:
+                    c.following = None
+                    c.following_gap_mm = None
+                    c._follow_release_since = None
+                else:
+                    c.following_gap_mm = gap
             else:
+                c._follow_release_since = None
                 c.following_gap_mm = gap
         for c in cars:
             if c.following is not None:
                 continue
             candidates = []
             for o in cars:
-                if o is c or o.following is c or not self._follow_pair_ok(c, o):
+                if o is c or o.following is c or not self._follow_pair_ok(c, o, now):
                     continue
                 gap = self._following_gap(c, o)
                 if gap is None or gap <= 0.0 or gap > FOLLOW_LINK_MM:
@@ -1174,11 +1198,14 @@ class Game:
                 gap, leader = min(candidates, key=lambda item: item[0])
                 c.following = leader
                 c.following_gap_mm = gap
+                c._follow_release_since = None
         for _ in range(2):
             changed = False
             for c in cars:
                 leader = c.following
                 if leader is None or leader.loc is None or c.loc is None:
+                    continue
+                if leader.loc.engine_distance is None or c.loc.engine_distance is None:
                     continue
                 gap = self._following_gap(c, leader)
                 c.following_gap_mm = gap
@@ -1196,6 +1223,13 @@ class Game:
     # ---- per frame ----
     def tick(self, dt: float) -> None:
         now = time.monotonic()
+        if not self.running:
+            # Grid/idle phases must not inherit a following edge from an
+            # earlier race at completely different positions.
+            for c in self.cars:
+                c.following = None
+                c.following_gap_mm = None
+                c._follow_release_since = None
         for c in self.cars:
             if c.loc:
                 c.loc.advance(dt, now)

@@ -5,7 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from anki.track import Track, Piece, START, STRAIGHT, TURN
-from game.game import CarState, Game, CAR_MIN_GAP_MM, FOLLOW_RELEASE_MM
+from game.game import (CarState, Game, CAR_MIN_GAP_MM, FOLLOW_RELEASE_MM,
+                       FOLLOW_RELEASE_HOLD_S, FOLLOW_STALE_S)
 
 
 def make_car(track, index, lane=23.0, frac=0.5, offset=0.0, direction=1):
@@ -61,19 +62,49 @@ class FollowingTests(unittest.TestCase):
         self.assertAlmostEqual(self.rear.loc.engine_distance, before)
 
     def test_link_releases_when_gap_is_large(self):
-        self.game._reconcile_vehicle_positions(time.monotonic())
+        now = time.monotonic()
+        self.game._reconcile_vehicle_positions(now)
         self.assertIs(self.rear.following, self.leader)
         self.leader.loc.set_engine_position(
             self.rear.loc.engine_distance + FOLLOW_RELEASE_MM + 100,
-            time.monotonic(), 400.0)
-        self.game._reconcile_vehicle_positions(time.monotonic())
+            now, 400.0)
+        self.leader.loc.last_update = now
+        self.game._reconcile_vehicle_positions(now)
+        # One sample is not enough: a localizer re-anchor may jump the gap.
+        self.assertIs(self.rear.following, self.leader)
+        later = now + FOLLOW_RELEASE_HOLD_S + 0.1
+        self.leader.loc.last_update = later
+        self.game._reconcile_vehicle_positions(later)
         self.assertIsNone(self.rear.following)
+
+    def test_short_position_jump_does_not_release_link(self):
+        now = time.monotonic()
+        self.game._reconcile_vehicle_positions(now)
+        self.assertIs(self.rear.following, self.leader)
+        # Real run: the leader's estimate jumped ~1.1 m forward for one
+        # sample, then the follower's estimate caught up on the next one.
+        self.leader.loc.set_engine_position(
+            self.rear.loc.engine_distance + 1300.0, now, 400.0)
+        self.leader.loc.last_update = now
+        self.game._reconcile_vehicle_positions(now)
+        self.assertIs(self.rear.following, self.leader)
+        self.rear.loc.set_engine_position(self.leader.loc.engine_distance - 180.0,
+                                          now + 0.1, 400.0)
+        self.rear.loc.last_update = now + 0.1
+        self.game._reconcile_vehicle_positions(now + 0.1)
+        self.assertIs(self.rear.following, self.leader)
+        self.assertAlmostEqual(self.game._following_gap(self.rear, self.leader),
+                               180.0, delta=1e-6)
 
 
     def test_one_full_lap_apart_is_not_a_following_pair(self):
         now = time.monotonic()
         self.rear.loc.set_engine_position(500.0, now, 700.0)
-        self.leader.loc.set_engine_position(500.0 + 2800.0, now, 400.0)
+        # One whole lap is not proximity, even though the modulo pose is equal.
+        self.leader.loc.engine_distance = 500.0 + 2800.0
+        self.leader.loc._engine_anchor = self.leader.loc.engine_distance
+        self.leader.loc.index, self.leader.loc.frac = self.leader.loc.filter.pose(
+            self.leader.loc.engine_distance)
         before = self.rear.loc.engine_distance
         self.game._reconcile_vehicle_positions(now)
         self.assertIsNone(self.rear.following)
@@ -87,11 +118,39 @@ class FollowingTests(unittest.TestCase):
         self.game._reconcile_vehicle_positions(time.monotonic())
         self.assertIsNone(self.rear.following)
 
+    def test_non_running_tick_clears_stale_edge(self):
+        now = time.monotonic()
+        self.game._reconcile_vehicle_positions(now)
+        self.assertIs(self.rear.following, self.leader)
+        self.game.running = False
+        self.game.tick(0.02)
+        self.assertIsNone(self.rear.following)
+
     def test_leader_stop_is_respected(self):
         self.leader.loc.set_engine_position(self.leader.loc.engine_distance,
                                             time.monotonic(), 0.0)
         self.game._reconcile_vehicle_positions(time.monotonic())
         self.assertLessEqual(self.rear.loc._engine_speed, 0.0)
+
+    def test_stale_leader_releases_link(self):
+        now = time.monotonic()
+        self.game._reconcile_vehicle_positions(now)
+        self.assertIs(self.rear.following, self.leader)
+        self.leader.loc.last_update = now - FOLLOW_STALE_S - 0.1
+        self.game._reconcile_vehicle_positions(now)
+        self.assertIsNone(self.rear.following)
+
+    def test_follower_appearing_ahead_is_pulled_back_not_released(self):
+        now = time.monotonic()
+        self.game._reconcile_vehicle_positions(now)
+        self.assertIs(self.rear.following, self.leader)
+        # A quantized position update must not be allowed to reverse the order.
+        self.rear.loc.set_engine_position(self.leader.loc.engine_distance + 700.0,
+                                          now, 720.0)
+        self.game._reconcile_vehicle_positions(now)
+        self.assertIs(self.rear.following, self.leader)
+        gap = self.game._following_gap(self.rear, self.leader)
+        self.assertAlmostEqual(gap, CAR_MIN_GAP_MM, delta=1e-6)
 
 
 if __name__ == "__main__":
