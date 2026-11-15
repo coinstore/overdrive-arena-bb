@@ -44,8 +44,7 @@ cars directly, with the protocol verified on real hardware (firmware 11866) and 
   shows if the game closes, retaining the last displayed results. The server listens only on this PC.
   New records save track geometry; older layouts are recovered for the current circuit or marked
   unavailable until rescanned.
-- **Battery lights**: the engine RGB keeps the player's color and blinks when the battery monitor reports
-  low or critical charge. Countdown/damage effects take priority; losing cars stay dark after the finish.
+- **Player lights**: each player keeps one colour across the pairing badge, car card and roof LED. The roof is steady while healthy and blinks faster as battle HP drops; the front lights flash red/green when firing, the tail flashes red when hit, and a destroyed car goes dark. Battery warnings stay on screen, not on the car.
 - **Cooperative track scanning**: cars share compatible lap observations and wheel measurements to fill
   missing codes and turns. Code changes also recover missed transition messages. A live reconstruction
   replaces the saved map while scanning, with unresolved gaps marked `?`. Scan speed cycles through
@@ -185,8 +184,21 @@ traffic. A player already using the full 2000 command range needs no boost.
   20 damage, victim slowed to 45 % for 1.5 s.
 - **Mine** (4 s cooldown, 2 active): dropped in your lane, arms after 1 s, lives 45 s. A car passing within
   12 cm in that lane takes 35 damage and is stopped for 1.2 s.
-- 100 HP. At 0 the car is destroyed: stopped 3 s with flashing lights, then respawns. Kills are counted.
-- Hits flash the victim's lights and rumble its controller.
+- 100 HP. At 0 the car is destroyed: stopped 3 s with all lights off, then respawns. Kills are counted.
+- Hits flash the victim's tail lights red and rumble its controller. The shooter's front lights alternate
+  red/green while firing. A destroyed car stays dark until it respawns.
+
+### Car light language
+
+- **Roof**: the player's colour. Battle only: steady above 60 HP, slow blink at 1 Hz up to 60 HP, fast
+  blink at 3 Hz up to 20 HP, off at 0 HP. The countdown blinks the roof in the player colour.
+- **Front**: off, except for the red/green weapon flash when firing (the original app's shooting mode).
+- **Tail**: off, except for a red flash when hit. A blaster hit is a short flash; a mine hit is a longer,
+  heavier throb.
+- **Destroyed**: every light is off for the 3-second stop. Respawn returns the roof to the steady player
+  colour.
+- Player colours are per driver, not per car: claiming a different car moves the colour with the driver.
+  Unclaimed AI/parked cars take a free colour so two cars never share a roof colour.
 
 ### Race mode
 

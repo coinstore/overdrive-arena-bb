@@ -34,7 +34,7 @@ from anki.ble_worker import BleWorker
 from anki.track import Track, TrackScanner, ScanEvidence
 from anki.vehicle import Vehicle, discover
 from game import inputs as I
-from game.game import CarState, Game
+from game.game import CarState, Game, PLAYER_COLORS
 from game.render import Renderer
 from game.records import Records
 
@@ -142,6 +142,7 @@ class App:
         self.game.mode = self.args.mode
         self.game.lap_target = self.args.laps
         self.game.set_race_speed_limit(self.args.max_speed if self.args.max_speed is not None else 2000)
+        self.assign_player_colors(send_lights=False)
         for cs in self.cars:
             cs.lights_idle()
         for s in self.sources:
@@ -149,6 +150,33 @@ class App:
         return True
 
     # ------------------------------------------------------------ pairing
+    def assign_player_colors(self, send_lights: bool = True) -> None:
+        """One colour per player: a claimed car takes its driver's colour.
+
+        Unclaimed cars (AI / parked) take the next free palette entry so two
+        cars never share a roof colour.  The map, HUD, cards and roof light all
+        read CarState.color, so this is the single source of truth.
+        """
+        used: set[int] = set()
+        claimed = {id(car) for car in self.claims.values()}
+        for source, car in self.claims.items():
+            index = int(getattr(source, "color_index", 0)) % len(PLAYER_COLORS)
+            used.add(index)
+            if car.set_player_color(index) and send_lights:
+                car.set_roof_color()
+        for car in self.cars:
+            if id(car) in claimed:
+                continue
+            # Keep an unclaimed car's existing colour when it is still free;
+            # only shift AI/parked cars that would collide with a player.
+            index = car.color_index
+            if index in used:
+                index = next((i for i in range(len(PLAYER_COLORS)) if i not in used),
+                             car.index % len(PLAYER_COLORS))
+            used.add(index)
+            if car.set_player_color(index) and send_lights:
+                car.set_roof_color()
+
     def pairing_tick(self) -> bool:
         g = self.game
         assert g is not None
@@ -190,16 +218,20 @@ class App:
                 owner = next((o for o, c in self.claims.items() if c is car), None)
                 if owner is s:
                     del self.claims[s]
+                    self.assign_player_colors()
                     self.status = f"{s.short} released {car.name}"
                 elif owner is not None:
                     self.status = f"{car.name} is already driven by {owner.short}"
                 else:
                     self.claims.pop(s, None)          # one car per controller
                     self.claims[s] = car
+                    self.assign_player_colors()
                     self.status = f"{s.short} ({s.name}) drives {car.name}"
                     s.rumble(0.5, 0.5, 200)
             if s.pressed(I.RELEASE) and s in self.claims:
-                self.status = f"{s.short} released {self.claims.pop(s).name}"
+                released = self.claims.pop(s)
+                self.assign_player_colors()
+                self.status = f"{s.short} released {released.name}"
             if s.pressed(I.TOGGLE_AI):
                 if car in self.claims.values():
                     self.status = f"{car.name} has a player; release it first"
@@ -263,6 +295,7 @@ class App:
             c.source = None
         for s, c in self.claims.items():
             c.source = s
+        self.assign_player_colors(send_lights=False)
         self.identified.clear()
         g.begin_grid()
         self.state = GRID
@@ -317,6 +350,7 @@ class App:
         assert g is not None
         if any(s.pressed(I.BACK) for s in self.sources):
             g.stop_all()
+            self.identified.clear()
             self.state = PAIRING
             self.status = "grid cancelled (cars stopped)"
             return
@@ -324,6 +358,7 @@ class App:
             placed, total = g.grid_summary()
             if placed == 0:
                 g.stop_all()
+                self.identified.clear()
                 self.state = PAIRING
                 self.status = "no car reached the start line - are they on the track?"
                 return
@@ -337,6 +372,7 @@ class App:
         assert g is not None
         if any(s.pressed(I.BACK) for s in self.sources):
             g.stop_all()
+            self.identified.clear()
             self.state = PAIRING
             self.status = "start cancelled (cars stopped)"
             return
@@ -351,6 +387,7 @@ class App:
         assert g is not None
         if any(s.pressed(I.BACK) for s in self.sources):
             g.stop_all()
+            self.identified.clear()
             self.state = PAIRING
             self.status = "start cancelled (cars stopped)"
             return
@@ -459,6 +496,8 @@ class App:
         for s in self.sources:
             if s.pressed(I.BACK):
                 g.stop_all()
+                self.assign_player_colors()
+                self.identified.clear()
                 self.state = PAIRING
                 self.status = "back to pairing (cars stopped)"
                 return
@@ -472,6 +511,8 @@ class App:
         if g.finished and g.finish_celebration_t and time.monotonic() - g.finish_celebration_t > 14.0:
             winner = g.winner
             g.stop_all()
+            self.assign_player_colors()
+            self.identified.clear()
             self.state = PAIRING
             self.status = f"{winner.name} won the race ({winner.driver_label()})" if winner else "race over"
 
@@ -490,7 +531,11 @@ class App:
             elif ev.type == pygame.CONTROLLERDEVICEADDED:
                 try:
                     if sdlc.is_controller(ev.device_index):
-                        pad = I.Pad(ev.device_index, len(self.pads) + 1)
+                        used = {int(p.short[1:]) for p in self.pads
+                                if p.short.startswith("P") and p.short[1:].isdigit()}
+                        number = next((n for n in range(1, len(PLAYER_COLORS) + 1) if n not in used),
+                                      len(self.pads) + 1)
+                        pad = I.Pad(ev.device_index, number)
                         if all(p.instance_id != pad.instance_id for p in self.pads):
                             self.pads.append(pad)
                             self.cursors[pad] = 0
@@ -507,6 +552,8 @@ class App:
                         if car is not None:
                             car.source = None
                             car.hard_stop(time.monotonic())
+                            self.assign_player_colors()
+                            self.identified.pop(car.index, None)
                             self.status = f"{p.name} disconnected, {car.name} stopped"
         return True
 

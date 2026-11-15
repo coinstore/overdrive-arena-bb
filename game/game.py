@@ -18,13 +18,12 @@ from anki.track import CarLocalizer, Track, STRAIGHT, START, CRISSCROSS, TURN, F
 from anki.vehicle import Vehicle
 from . import inputs as I
 from .battery import BatteryMonitor
+from .colors import ENGINE_COLORS, PLAYER_COLORS
 from .records import Records
 
 log = logging.getLogger("game")
 
 WARN_COLOR = (255, 176, 70)
-PLAYER_COLORS = [(255, 90, 90), (90, 190, 255), (120, 240, 120), (255, 220, 90), (230, 130, 255), (255, 160, 70)]
-ENGINE_COLORS = [(14, 0, 0), (0, 4, 14), (0, 14, 0), (14, 10, 0), (12, 0, 14), (14, 5, 0)]
 LANES = (-68.0, -23.0, 23.0, 68.0)
 MAX_ABS_OFFSET = 68.0
 # Physical following constraint between cars in the same lane.
@@ -81,6 +80,12 @@ MINE_TRIGGER_MM = 120.0
 MINE_LANE_MM = 35.0
 MINE_ARM_S = 1.0
 DEATH_STOP_S = 3.0
+# Light feedback timings and battle health bands.
+LIGHT_FIRE_S = 0.35
+LIGHT_HIT_S = 0.5
+LIGHT_MINE_HIT_S = 1.2
+HP_CAUTION = 60
+HP_CRITICAL = 20
 GRID_SPEED = 320            # speed used to drive to the start line
 GRID_RETRY_SPEED = 500      # a missed grid attempt costs a full lap; still quick, but lane changes stay reliable
 GRID_APPROACH_FRAC = 0.0    # crawl from the start of the last piece, so deceleration is early and even
@@ -139,8 +144,9 @@ class CarState:
     def __init__(self, car: Vehicle, index: int, ble: BleWorker, max_speed: int):
         self.car = car
         self.index = index
-        self.color = PLAYER_COLORS[index % len(PLAYER_COLORS)]
-        self.engine_rgb = ENGINE_COLORS[index % len(ENGINE_COLORS)]
+        self.color_index = index % len(PLAYER_COLORS)
+        self.color = PLAYER_COLORS[self.color_index]
+        self.engine_rgb = ENGINE_COLORS[self.color_index]
         self.ble = ble
         self._ai_max_speed = max_speed
         self.player_max_speed = 2000
@@ -227,9 +233,11 @@ class CarState:
         self.ai_manual_track_retry = False
         self.boost_until = 0.0
         self.boost_ready_at = 0.0
-        self.lights_restore_at = 0.0
-        self._finish_dark = False
-        self._battery_light_state = None
+        self.front_until = 0.0
+        self.tail_until = 0.0
+        self.tail_priority = 0
+        self._health_light_state = None
+        self._lights_dark = False
 
         self._last_speed_sent = 0
         self._last_speed_t = 0.0
@@ -314,10 +322,8 @@ class CarState:
             self._last_offtrack_t = received_at
         if msg_id == P.MSG_BATTERY_LEVEL_RESPONSE and isinstance(decoded, dict):
             self.battery.update(int(decoded["battery_mv"]), self._last_speed_sent, charging=bool(self.car.on_charger))
-            self.update_battery_light()
         elif msg_id == P.MSG_STATUS_UPDATE and isinstance(decoded, P.VehicleStatus):
             self.battery.charging = decoded.on_charger
-            self.update_battery_light()
             if decoded.on_charger and self.loc is not None:
                 self.loc.on_track = False
         elif msg_id == P.MSG_SPEED_UPDATE and isinstance(decoded, P.SpeedUpdate) and self.loc is not None:
@@ -509,43 +515,144 @@ class CarState:
         self._send(P.turn(P.TURN_UTURN, P.TURN_TRIGGER_IMMEDIATE))
 
     # ---- lights ----
-    def lights_idle(self) -> None:
-        self._finish_dark = False
-        self.lights_restore_at = 0.0
-        self.update_battery_light(force=True)
-        self._send(P.lights_on(P.LIGHT_HEADLIGHTS | P.LIGHT_ENGINE))
+    def set_player_color(self, index: int) -> bool:
+        """Move the car's player colour; return True when it changed."""
+        index %= len(PLAYER_COLORS)
+        if index == self.color_index:
+            return False
+        self.color_index = index
+        self.color = PLAYER_COLORS[index]
+        self.engine_rgb = ENGINE_COLORS[index]
+        self._health_light_state = None
+        return True
 
-    def update_battery_light(self, force: bool = False) -> None:
-        """Keep player color; blink only for low or critical charge."""
-        if self._finish_dark or self.lights_restore_at:
+    def _send_patterns(self, channels: list[tuple[int, int, int, int, int]]) -> None:
+        """A 0x33 packet carries at most three channels; split larger batches."""
+        for i in range(0, len(channels), 3):
+            self._send(P.lights_pattern(channels[i:i + 3]))
+
+    def _clear_light_events(self) -> None:
+        self.front_until = 0.0
+        self.tail_until = 0.0
+        self.tail_priority = 0
+
+    def _all_lights_off_channels(self) -> list[tuple[int, int, int, int, int]]:
+        return [(channel, P.EFFECT_STEADY, 0, 0, 0) for channel in range(6)]
+
+    def set_roof_color(self) -> None:
+        """Show the steady player colour without touching front or tail."""
+        if self._lights_dark:
             return
-        warning = self.battery.status in ("low", "critical")
-        state = (self.engine_rgb, warning)
-        if not force and state == self._battery_light_state:
+        self._health_light_state = ("steady", self.engine_rgb)
+        self._send(P.engine_color(*self.engine_rgb))
+
+    def lights_idle(self) -> None:
+        self._clear_light_events()
+        self._lights_dark = False
+        self._health_light_state = ("steady", self.engine_rgb)
+        self._send(P.lights_off(0x0F))
+        r, g, b = self.engine_rgb
+        self._send_patterns([
+            (P.LC_RED, P.EFFECT_STEADY, r, r, 0),
+            (P.LC_GREEN, P.EFFECT_STEADY, g, g, 0),
+            (P.LC_BLUE, P.EFFECT_STEADY, b, b, 0),
+            (P.LC_TAIL, P.EFFECT_STEADY, 0, 0, 0),
+            (P.LC_FRONTL, P.EFFECT_STEADY, 0, 0, 0),
+            (P.LC_FRONTR, P.EFFECT_STEADY, 0, 0, 0),
+        ])
+
+    def lights_countdown(self) -> None:
+        """Player-colour roof blink for the 3-2-1 countdown."""
+        self._clear_light_events()
+        self._lights_dark = False
+        self._health_light_state = None
+        self._send(P.lights_off(0x0F))
+        self._send_patterns([
+            (P.LC_RED, P.EFFECT_FLASH, 0, 5, 10),
+            (P.LC_GREEN, P.EFFECT_FLASH, 0, 5, 10),
+            (P.LC_BLUE, P.EFFECT_FLASH, 0, 5, 10),
+            (P.LC_TAIL, P.EFFECT_STEADY, 0, 0, 0),
+            (P.LC_FRONTL, P.EFFECT_STEADY, 0, 0, 0),
+            (P.LC_FRONTR, P.EFFECT_STEADY, 0, 0, 0),
+        ])
+
+    def update_health_light(self, battle: bool, force: bool = False) -> None:
+        """Battle only: steady -> slow blink -> fast blink as HP drops."""
+        if self._lights_dark:
             return
-        self._battery_light_state = state
-        if warning:
-            self._send(P.lights_pattern([(channel, P.EFFECT_FLASH, 0, value, 0)
-                       for channel, value in zip((P.LC_RED, P.LC_GREEN, P.LC_BLUE), self.engine_rgb)]))
+        if not battle:
+            band = "steady"
+        elif self.hp <= 0:
+            band = "off"
+        elif self.hp <= HP_CRITICAL:
+            band = "fast"
+        elif self.hp <= HP_CAUTION:
+            band = "slow"
+        else:
+            band = "steady"
+        state = (band, self.engine_rgb)
+        if not force and state == self._health_light_state:
+            return
+        self._health_light_state = state
+        if band == "off":
+            self._send(P.engine_color(0, 0, 0))
+        elif band == "slow":
+            self._send(P.engine_flash(*self.engine_rgb, cycles=10))
+        elif band == "fast":
+            self._send(P.engine_flash(*self.engine_rgb, cycles=30))
         else:
             self._send(P.engine_color(*self.engine_rgb))
 
-    def lights_flash(self, now: float, seconds: float = 1.0) -> None:
-        self._send(P.lights_pattern([(P.LC_TAIL, P.EFFECT_FLASH, 0, 14, 10), (P.LC_RED, P.EFFECT_FLASH, 0, 14, 10),
-                                     (P.LC_FRONTL, P.EFFECT_FLASH, 0, 14, 10)]))
-        self.lights_restore_at = now + seconds
+    def lights_fire(self, now: float) -> None:
+        if self._lights_dark:
+            return
+        self._send(P.lights_on(P.LIGHT_FRONTLIGHTS))
+        self.front_until = now + LIGHT_FIRE_S
+
+    def lights_hit(self, now: float, mine: bool = False) -> None:
+        """Flash only the tail; a mine hit outranks and outlasts a blaster hit."""
+        if self._lights_dark:
+            return
+        priority = 3 if mine else 2
+        if now < self.tail_until and priority < self.tail_priority:
+            return
+        self.tail_priority = priority
+        self.tail_until = now + (LIGHT_MINE_HIT_S if mine else LIGHT_HIT_S)
+        if mine:
+            pattern = [(P.LC_TAIL, P.EFFECT_THROB, 0, P.MAX_LIGHT_INTENSITY, 16)]
+        else:
+            pattern = [(P.LC_TAIL, P.EFFECT_FLASH, 0, 5, 20)]
+        self._send(P.lights_pattern(pattern))
+
+    def lights_dead(self) -> None:
+        self._clear_light_events()
+        self._lights_dark = True
+        self._health_light_state = ("off", self.engine_rgb)
+        self._send(P.lights_off(0x0F))
+        self._send_patterns(self._all_lights_off_channels())
+
+    def tick_lights(self, now: float) -> None:
+        """Expire the short fire/tail overlays."""
+        if self.front_until and now >= self.front_until:
+            self.front_until = 0.0
+            self._send(P.lights_off(P.LIGHT_FRONTLIGHTS))
+        if self.tail_until and now >= self.tail_until:
+            self.tail_until = 0.0
+            self.tail_priority = 0
+            self._send(P.lights_pattern([(P.LC_TAIL, P.EFFECT_STEADY, 0, 0, 0)]))
 
     def lights_identify(self, on: bool) -> None:
-        self._send(P.lights_on(P.LIGHT_HEADLIGHTS | P.LIGHT_FRONTLIGHTS) if on else P.lights_off(P.LIGHT_HEADLIGHTS | P.LIGHT_FRONTLIGHTS))
+        self._send(P.lights_on(P.LIGHT_FRONTLIGHTS) if on else P.lights_off(P.LIGHT_FRONTLIGHTS))
 
     def lights_finish(self, winner: bool) -> None:
-        self.lights_restore_at = 0.0
-        self._finish_dark = not winner
-        self._battery_light_state = None
-        self._send(P.lights_pattern([(channel, P.EFFECT_STEADY, 0, 0, 0) for channel in range(6)]))
-        self._send(P.lights_off(P.LIGHT_HEADLIGHTS | P.LIGHT_BRAKELIGHTS | P.LIGHT_FRONTLIGHTS | P.LIGHT_ENGINE))
+        self._clear_light_events()
         if winner:
             self.lights_idle()
+        else:
+            self._lights_dark = True
+            self._health_light_state = ("off", self.engine_rgb)
+            self._send(P.lights_off(0x0F))
+            self._send_patterns(self._all_lights_off_channels())
 
     def world(self) -> Optional[tuple[float, float]]:
         return self.loc.world() if self.loc else None
@@ -911,7 +1018,7 @@ class Game:
         self.countdown_feedback()
         for c in self.cars:
             if c.grid_state == "placed":
-                c.lights_flash(self.countdown_t0, COUNTDOWN_S)
+                c.lights_countdown()
 
     def countdown_left(self) -> float:
         return max(0.0, COUNTDOWN_S - (time.monotonic() - self.countdown_t0))
@@ -1021,6 +1128,7 @@ class Game:
             c.grid_runup_pending = False
         for c in self.cars:
             c.hard_stop(now)
+            c.lights_idle()
 
     def log(self, text: str, color: tuple = (232, 232, 236)) -> None:
         self.events.appendleft((time.monotonic(), text, color))
@@ -1298,6 +1406,8 @@ class Game:
             self._reconcile_vehicle_positions(now)
         self.fx = [e for e in self.fx if now - e.t0 < e.duration]
         self.update_fair_penalties()
+        for c in self.cars:
+            c.tick_lights(now)
         if not self.running:
             return
         if self.finished:
@@ -1325,7 +1435,6 @@ class Game:
                 if blink == 24:
                     self.winner.lights_idle()
                 else:
-                    self.winner.lights_restore_at = now + 1.0
                     rgb = self.winner.engine_rgb if blink % 2 == 0 else (0, 0, 0)
                     self.winner._send(P.engine_color(*rgb))
             return
@@ -1336,9 +1445,6 @@ class Game:
                 c.lights_idle()
                 self.effect("spawn", c.world(), c.color, 0.8)
                 self.log(f"{c.name} respawned", c.color)
-            if c.lights_restore_at and now > c.lights_restore_at:
-                c.lights_restore_at = 0.0
-                c.lights_idle()
             if c.source is not None and c.source.alive():
                 self._human(c, dt, now)
             elif c.ai:
@@ -1783,6 +1889,7 @@ class Game:
         if not self.weapons_enabled or now < shooter.fire_ready_at or shooter.is_dead(now) or not shooter.localized():
             return
         shooter.fire_ready_at = now + BLASTER_COOLDOWN_S
+        shooter.lights_fire(now)
         p0 = shooter.world()
         if p0 is None:
             return
@@ -1852,15 +1959,17 @@ class Game:
             victim.penalty_until = now + BLASTER_SLOW_S
         if stun:
             victim.stun_until = now + MINE_STUN_S
-        victim.lights_flash(now, 0.8)
         if victim.source:
             victim.source.rumble(0.9, 0.4, 250)
         if victim.hp <= 0:
             victim.dead_until = now + DEATH_STOP_S
             victim.deaths += 1
             attacker.kills += 1
-            victim.lights_flash(now, DEATH_STOP_S)
+            victim.lights_dead()
             self.effect("boom", w, victim.color, 1.2)
             self.log(f"{attacker.name} destroyed {victim.name}!", attacker.color)
-        elif slow:
-            self.log(f"{attacker.name} hit {victim.name} (-{amount})", attacker.color)
+        else:
+            victim.lights_hit(now, mine=stun)
+            victim.update_health_light(self.weapons_enabled)
+            if slow:
+                self.log(f"{attacker.name} hit {victim.name} (-{amount})", attacker.color)

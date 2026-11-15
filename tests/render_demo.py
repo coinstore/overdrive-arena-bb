@@ -11,7 +11,7 @@ import pygame  # noqa: E402
 
 from anki import protocol as P  # noqa: E402
 from anki.track import TrackScanner, ScanEvidence  # noqa: E402
-from game.game import CarState, Game  # noqa: E402
+from game.game import CarState, Game, PLAYER_COLORS  # noqa: E402
 from game.render import Renderer  # noqa: E402
 from game.inputs import Keyboard  # noqa: E402
 
@@ -105,6 +105,7 @@ def main(out_dir: Path):
     pygame.image.save(screen, str(out_dir / "render_pairing_racemode.png"))
     game.mode = "battle"
     kb2 = Keyboard(); kb2.name = "Xbox One S Controller"; kb2.short = "P1"
+    kb2.color_index = 0; kb2.color = PLAYER_COLORS[0]
     r.draw_pairing(game, [kb2, kb], {kb: 1, kb2: 0}, {kb2: cars[0]}, "P1 (Xbox One S Controller) drives X52", "controls line 1\ncontrols line 2")
     pygame.image.save(screen, str(out_dir / "render_pairing.png"))
     evidence = ScanEvidence()

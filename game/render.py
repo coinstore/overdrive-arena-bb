@@ -410,7 +410,7 @@ class Renderer:
         src_color = {}
         palette = [(255, 214, 92), (120, 200, 255), (200, 150, 255), (140, 240, 170), (255, 160, 120)]
         for i, s in enumerate(sources):
-            src_color[s] = palette[i % len(palette)]
+            src_color[s] = getattr(s, "color", palette[i % len(palette)])
 
         # header
         self.text("PAIRING", (28, 18), TEXT, self.title)

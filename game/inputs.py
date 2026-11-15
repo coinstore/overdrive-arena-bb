@@ -6,6 +6,8 @@ import logging
 import pygame
 from pygame._sdl2 import controller as sdlc
 
+from game.colors import PLAYER_COLORS
+
 log = logging.getLogger("game.inputs")
 
 DEADZONE = 0.15
@@ -25,6 +27,8 @@ ACTION_NAMES = {STOP: "stop", UTURN: "u-turn", FIRE: "fire", MINE: "mine", LANE_
 class InputSource:
     name = "?"
     short = "?"
+    color_index = 0
+    color = PLAYER_COLORS[0]
 
     def poll(self, dt: float) -> None: ...
     def throttle(self) -> float: return 0.0
@@ -63,6 +67,8 @@ class Pad(InputSource):
         self.ctrl = sdlc.Controller(index)
         self.name = sdlc.name_forindex(index) or f"pad {index}"  # only safe once is_controller(index) is True
         self.short = f"P{number}"
+        self.color_index = (number - 1) % len(PLAYER_COLORS)
+        self.color = PLAYER_COLORS[self.color_index]
         self.instance_id = self.ctrl.as_joystick().get_instance_id()
         # SDL GUID identifies a model, not an individual identical pad. Keep
         # records under the visible player slot as well, never transient IDs.
@@ -128,6 +134,8 @@ class Keyboard(InputSource):
     record_id = "keyboard"
     name = "keyboard"
     short = "KB"
+    color_index = 5
+    color = PLAYER_COLORS[5]
     KEYS = {
         FAIR_GAME: (pygame.K_h,),
         SCORES: (pygame.K_F2,),

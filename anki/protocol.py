@@ -115,16 +115,29 @@ MAX_LIGHT_INTENSITY = 14
 
 def lights_pattern(channels: list[tuple[int, int, int, int, int]]) -> bytes:
     """channels: up to 3 tuples (channel, effect, start, end, cycles_per_10s)."""
-    channels = channels[:3]
+    if len(channels) > 3:
+        raise ValueError("a 0x33 lights pattern carries at most 3 channels")
     payload = bytes([len(channels)])
     for ch, eff, start, end, cycles in channels:
-        payload += bytes([ch & 0xFF, eff & 0xFF, min(MAX_LIGHT_INTENSITY, start), min(MAX_LIGHT_INTENSITY, end), min(255, cycles)])
+        # FLASH uses start/end as a time window (0..11); the other effects use
+        # them as 0..14 intensity values.
+        limit = 11 if eff == EFFECT_FLASH else MAX_LIGHT_INTENSITY
+        start = max(0, min(limit, start))
+        end = max(0, min(limit, end))
+        payload += bytes([ch & 0xFF, eff & 0xFF, start, end, min(255, cycles)])
     return _msg(MSG_LIGHTS_PATTERN, payload)
 
 
 def engine_color(r: int, g: int, b: int, effect: int = EFFECT_STEADY, cycles: int = 0) -> bytes:
     """Set the RGB 'engine' light. r,g,b in 0..14."""
     return lights_pattern([(LC_RED, effect, r, r, cycles), (LC_GREEN, effect, g, g, cycles), (LC_BLUE, effect, b, b, cycles)])
+
+
+def engine_flash(r: int, g: int, b: int, cycles: int = 10, start: int = 0, end: int = 5) -> bytes:
+    """Blink the roof in a player colour. FLASH start/end is a 0..11 time window."""
+    return lights_pattern([(LC_RED, EFFECT_FLASH, start, end, cycles),
+                           (LC_GREEN, EFFECT_FLASH, start, end, cycles),
+                           (LC_BLUE, EFFECT_FLASH, start, end, cycles)])
 
 
 def ping() -> bytes:

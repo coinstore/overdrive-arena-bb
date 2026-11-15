@@ -11,7 +11,7 @@ STEPS = [
     ("lights_on HEAD", P.lights_on(P.LIGHT_HEADLIGHTS)),
     ("lights_off HEAD", P.lights_off(P.LIGHT_HEADLIGHTS)),
     ("engine_color red steady (3ch pattern)", P.engine_color(14, 0, 0)),
-    ("flash pattern 3ch (tail,red,frontL)", P.lights_pattern([(P.LC_TAIL, P.EFFECT_FLASH, 0, 14, 10), (P.LC_RED, P.EFFECT_FLASH, 0, 14, 10), (P.LC_FRONTL, P.EFFECT_FLASH, 0, 14, 10)])),
+    ("flash pattern 3ch (tail,red,frontL)", P.lights_pattern([(P.LC_TAIL, P.EFFECT_FLASH, 0, 5, 10), (P.LC_RED, P.EFFECT_FLASH, 0, 5, 10), (P.LC_FRONTL, P.EFFECT_FLASH, 0, 5, 10)])),
     ("engine_color blue steady", P.engine_color(0, 0, 14)),
     ("single channel pattern (7 bytes)", P.lights_pattern([(P.LC_GREEN, P.EFFECT_THROB, 0, 14, 6)])),
     ("engine_color green steady", P.engine_color(0, 14, 0)),

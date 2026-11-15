@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 from anki import protocol as P
 from anki.position_filter import PositionFilter
 from anki.track import CarLocalizer, Piece, Track, START, STRAIGHT, TURN, FNF, locate
-from game.game import CarState, Game, START_SPEED
+from game.game import CarState, Game, PLAYER_COLORS, START_SPEED
 from game.records import Records
 from game import inputs as I
 from app import App, PAIRING, RACE, GRID, READY, COUNTDOWN
@@ -110,38 +110,61 @@ class PredictionTests(unittest.TestCase):
     def test_finish_lights_clear_effects_and_only_restore_winner(self):
         self.car._send = Mock()
         self.car.lights_idle = Mock()
-        self.car.lights_restore_at = self.now + 100
         self.car.lights_finish(False)
-        self.assertEqual(self.car.lights_restore_at, 0)
         self.car.lights_idle.assert_not_called()
         self.car._send.assert_any_call(P.lights_off(15))
         self.car.lights_finish(True)
         self.car.lights_idle.assert_called_once()
 
-    def test_low_battery_blinks_player_color_and_does_not_repeat_commands(self):
+    def test_battery_updates_do_not_touch_lights(self):
         self.car._send = Mock()
-        self.car.battery.update(3600, 0)
-        self.car.update_battery_light()
-        expected = P.lights_pattern([(channel, P.EFFECT_FLASH, 0, value, 0)
-                    for channel, value in zip((P.LC_RED, P.LC_GREEN, P.LC_BLUE), self.car.engine_rgb)])
-        self.car._send.assert_called_once_with(expected)
-        self.car.update_battery_light()
-        self.car._send.assert_called_once()
-        self.car.battery.update(4000, 0)
-        self.car.update_battery_light()
-        self.car._send.assert_called_with(P.engine_color(*self.car.engine_rgb))
-
-    def test_battery_update_does_not_override_effects_or_relight_loser(self):
-        self.car._send = Mock()
-        self.car.lights_flash(self.now)
-        self.car._send.reset_mock()
-        self.car.on_message(P.MSG_BATTERY_LEVEL_RESPONSE, {'battery_mv': 3500})
-        self.car._send.assert_not_called()
-        self.car.lights_idle()
-        self.car.lights_finish(False)
-        self.car._send.reset_mock()
         self.car.on_message(P.MSG_BATTERY_LEVEL_RESPONSE, {'battery_mv': 3600})
+        self.car.on_message(P.MSG_STATUS_UPDATE, P.VehicleStatus(False, True, True, False))
         self.car._send.assert_not_called()
+
+    def test_health_light_bands_use_firmware_flash(self):
+        self.car._send = Mock()
+        rgb = self.car.engine_rgb
+        self.car.update_health_light(True, force=True)
+        self.car._send.assert_called_with(P.engine_color(*rgb))
+        self.car.hp = 60
+        self.car.update_health_light(True)
+        self.car._send.assert_called_with(P.engine_flash(*rgb, cycles=10))
+        self.car.hp = 20
+        self.car.update_health_light(True)
+        self.car._send.assert_called_with(P.engine_flash(*rgb, cycles=30))
+        self.car.hp = 0
+        self.car.update_health_light(True)
+        self.car._send.assert_called_with(P.engine_color(0, 0, 0))
+        self.car._send.reset_mock()
+        self.car.update_health_light(True)
+        self.car._send.assert_not_called()
+
+    def test_mine_hit_outranks_blaster_and_expires(self):
+        self.car._send = Mock()
+        self.car.lights_hit(self.now, mine=True)
+        self.car._send.assert_called_with(P.lights_pattern([(P.LC_TAIL, P.EFFECT_THROB, 0, 14, 16)]))
+        self.car._send.reset_mock()
+        self.car.lights_hit(self.now + 0.1, mine=False)
+        self.car._send.assert_not_called()
+        self.car.tick_lights(self.now + 2.0)
+        self.car._send.assert_called_with(P.lights_pattern([(P.LC_TAIL, P.EFFECT_STEADY, 0, 0, 0)]))
+
+    def test_flash_time_window_is_clamped_to_eleven(self):
+        packet = P.lights_pattern([(P.LC_TAIL, P.EFFECT_FLASH, 0, 14, 10)])
+        self.assertEqual(packet[6], 11)
+        with self.assertRaises(ValueError):
+            P.lights_pattern([(P.LC_TAIL, P.EFFECT_STEADY, 0, 0, 0)] * 4)
+
+    def test_damage_flashes_tail_and_updates_health_band(self):
+        victim = CarState(SimpleNamespace(model='Victim', battery_mv=0, connected=True, on_charger=False),
+                          1, Mock(), 800)
+        victim.hp = 60
+        victim._send = Mock()
+        self.game.mode = 'battle'
+        self.game.damage(victim, self.car, 20, self.now, slow=True)
+        victim._send.assert_any_call(P.lights_pattern([(P.LC_TAIL, P.EFFECT_FLASH, 0, 5, 20)]))
+        victim._send.assert_any_call(P.engine_flash(*victim.engine_rgb, cycles=10))
 
     def test_finished_tick_sets_lights_once(self):
         self.car._send = Mock()
@@ -633,10 +656,14 @@ class ControllerTests(unittest.TestCase):
         self.pad.alive.return_value = True
         self.pad.brake.return_value = 0.0
         self.pad.short, self.pad.name = 'P1', 'Pad'
+        self.pad.color_index = 0
+        self.pad.color = (255, 90, 90)
         self.app.pads = [self.pad]
         self.app.keyboard = Mock(spec=I.InputSource)
         self.app.keyboard.alive.return_value = False
         self.app.keyboard.pressed.return_value = False
+        self.app.keyboard.color_index = 5
+        self.app.keyboard.color = (235, 235, 245)
         car = CarState(SimpleNamespace(model='Test', connected=True, on_charger=False, battery_mv=0), 0, Mock(), 800)
         self.app.cars = [car]
         self.app.game = Game(Mock(), [car], circuit(), True, None)
@@ -660,6 +687,17 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.app.state, GRID)
         self.assertIs(self.app.cars[0].source, self.pad)
         self.app.game.begin_grid.assert_called_once()
+
+    def test_claimed_car_takes_player_colour_and_reassigns_ai(self):
+        second = CarState(SimpleNamespace(model='Second', connected=True, on_charger=False, battery_mv=0),
+                          1, Mock(), 800)
+        self.app.cars.append(second)
+        self.pad.color_index = 1          # P2 = blue
+        self.app.claims[self.pad] = self.app.cars[0]
+        self.app.assign_player_colors(send_lights=False)
+        self.assertEqual(self.app.cars[0].color_index, 1)
+        self.assertNotEqual(second.color_index, 1)
+        self.assertEqual(second.color, PLAYER_COLORS[second.color_index])
 
     def test_grid_waits_for_a_second_start_press(self):
         self.app.state = GRID
@@ -713,7 +751,7 @@ class ControllerTests(unittest.TestCase):
         game = self.app.game
         car = self.app.cars[0]
         car.source, car.grid_state = self.pad, 'placed'
-        car.lights_flash = Mock()
+        car.lights_countdown = Mock()
         with patch('game.game.time.monotonic', return_value=100):
             game.begin_countdown()
         for now in (100.2, 101, 101.2, 102, 102.9, 103, 103.1):
