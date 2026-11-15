@@ -87,6 +87,7 @@ GRID_APPROACH_FRAC = 0.0    # crawl from the start of the last piece, so deceler
 GRID_CRAWL = 300            # 250 mm/s loses track codes on some pieces
 GRID_RECOVERY_DRIVE_S = 1.5  # bounded slow search, followed by a pause before retrying
 GRID_RECOVERY_PAUSE_S = 2.0
+GRID_MIN_RUNUP_MM = 600.0   # start this close to the bar: drive a full lap before lining up
 START_SPEED = 400           # launch target at GO; capped by the race and personal limits
 
 COUNTDOWN_S = 3.0
@@ -166,6 +167,9 @@ class CarState:
         self.grid_uturn_t = 0.0
         self.grid_laps = 0
         self.grid_retry_lap = False
+        self.grid_force_lap = False       # too little run-up to the bar: complete a lap first
+        self.grid_seen_start = False      # forced lap has passed the start piece
+        self.grid_runup_pending = False   # check the first valid pose of this grid
         self.grid_prev_index: Optional[int] = None
         self.grid_fw_stop = False
         self.grid_fw_repeat_t = 0.0
@@ -643,6 +647,9 @@ class Game:
             c.grid_uturn_t = 0.0
             c.grid_laps = 0
             c.grid_retry_lap = False
+            c.grid_force_lap = False
+            c.grid_seen_start = False
+            c.grid_runup_pending = True
             c.grid_prev_index = None
             c.grid_fw_stop = False
             c.grid_fw_repeat_t = 0.0
@@ -698,6 +705,12 @@ class Game:
             assert loc is not None
             previous_index = c.grid_prev_index
             c.grid_prev_index = loc.index
+            if c.grid_runup_pending:
+                c.grid_runup_pending = False
+                if self._grid_runup_too_short(c):
+                    c.grid_force_lap = c.grid_retry_lap = True
+                    c.grid_seen_start = loc.index == 0
+                    self.log(f"{c.name}: too close to the start line; one full lap first", c.color)
             if loc.direction < 0:
                 # driving the wrong way round: turn around, then keep going
                 if now - c.grid_uturn_t > 4.0:
@@ -708,9 +721,27 @@ class Game:
                 continue
             if c.grid_retry_lap:
                 n = len(self.track.pieces) if self.track else 1
-                approaching = (loc.index == n - 1 and loc.frac > GRID_APPROACH_FRAC) or (loc.index == 0 and loc.frac < 0.4)
+                if c.grid_force_lap:
+                    if loc.index == 0:
+                        c.grid_seen_start = True
+                    approaching = (n > 1 and c.grid_seen_start
+                                   and loc.index == n - 1 and loc.frac > GRID_APPROACH_FRAC)
+                else:
+                    approaching = ((loc.index == n - 1 and loc.frac > GRID_APPROACH_FRAC)
+                                   or (loc.index == 0 and loc.frac < 0.4))
                 if approaching:
+                    was_forced = c.grid_force_lap
                     c.grid_retry_lap = False
+                    c.grid_force_lap = False
+                    c.grid_seen_start = False
+                    if was_forced:
+                        # The lap deliberately passed the start piece without
+                        # stopping. Do not treat that as the normal overshoot on
+                        # this same frame; crawl into the next approach.
+                        c.grid_state = "approach"
+                        c.command_speed(GRID_CRAWL, now)
+                        c.apply_lane(now)
+                        continue
                 else:
                     c.grid_state = "retry lap"
                     c.command_speed(GRID_RETRY_SPEED, now)
@@ -832,6 +863,22 @@ class Game:
                     why = "wrong lane"
                 self.log(f"{c.name}: {why}; another lap to retry the start", c.color)
         return done
+
+    def _grid_runup_too_short(self, c: "CarState") -> bool:
+        """True when either side of the start bar is closer than the minimum run-up.
+
+        Cars may be parked just behind the line or have overshot it by a few
+        centimetres.  Both cases otherwise look "on the bar" immediately, so the
+        car would stop before it could line up cleanly.  Require a real lap in
+        both directions instead.
+        """
+        loc = c.loc
+        if self.track is None or loc is None or loc.index is None:
+            return False
+        bar = loc.filter.distance(0, self.track.start_bar_frac)
+        here = loc.filter.distance(loc.index, loc.frac)
+        length = loc.filter.length
+        return min((bar - here) % length, (here - bar) % length) < GRID_MIN_RUNUP_MM
 
     def _grid_lane_ok(self, c: "CarState", lane_now: Optional[float]) -> bool:
         """Placement lane: the planned lane, or any lane no other placed car occupies.
@@ -969,6 +1016,9 @@ class Game:
             c.grid_fw_stop = False
             c.grid_bar_pending = False
             c.start_bar_locked = False
+            c.grid_force_lap = False
+            c.grid_seen_start = False
+            c.grid_runup_pending = False
         for c in self.cars:
             c.hard_stop(now)
 

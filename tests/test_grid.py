@@ -2,10 +2,10 @@
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 from anki import protocol as P
-from anki.track import Track, Piece, START, TURN
-from game.game import CarState, Game
+from anki.track import Track, Piece, START, STRAIGHT, TURN
+from game.game import CarState, Game, GRID_RETRY_SPEED
 
 class GridTests(unittest.TestCase):
     def setUp(self):
@@ -23,6 +23,72 @@ class GridTests(unittest.TestCase):
         self.c.apply_lane = Mock()
         self.c.stop_on_transition = Mock()
         self.c.lights_idle = Mock()
+
+    def _begin_at(self, index, frac, sub_id):
+        self.c.loc.index, self.c.loc.frac, self.c.loc.sub_id = index, frac, sub_id
+        self.c.loc.on_track = True
+        self.c.loc.last_update = time.monotonic()
+        self.c.loc.direction = 1
+        self.c.loc.lane_mm = 23
+        self.g.begin_grid()
+        self.g.grid_tick(0)
+
+    def test_start_after_the_line_forces_a_full_lap(self):
+        self._begin_at(0, .52, 33)
+        self.assertEqual(self.c.grid_state, 'retry lap')
+        self.assertTrue(self.c.grid_force_lap)
+        self.c.command_speed.assert_any_call(GRID_RETRY_SPEED, ANY)
+        self.assertNotEqual(self.c.grid_state, 'placed')
+
+    def test_start_before_the_line_forces_a_full_lap(self):
+        self._begin_at(0, .45, 34)
+        self.assertEqual(self.c.grid_state, 'retry lap')
+        self.assertTrue(self.c.grid_force_lap)
+
+    def test_forced_lap_from_the_last_piece_must_pass_the_start(self):
+        self._begin_at(1, .7, None)
+        self.assertTrue(self.c.grid_force_lap)
+        self.assertFalse(self.c.grid_seen_start)
+        self.c.loc.index, self.c.loc.frac = 0, .2
+        self.g.grid_tick(0)
+        self.assertTrue(self.c.grid_force_lap)
+        self.assertEqual(self.c.grid_state, 'retry lap')
+        self.c.loc.index, self.c.loc.frac = 1, .7
+        self.g.grid_tick(0)
+        self.assertFalse(self.c.grid_force_lap)
+        self.assertFalse(self.c.grid_retry_lap)
+
+    def test_forced_lap_finishes_on_the_line(self):
+        self._begin_at(0, .52, 33)
+        self.c.loc.index, self.c.loc.frac = 1, .7
+        self.g.grid_tick(0)
+        self.c.loc.index, self.c.loc.frac, self.c.loc.sub_id = 0, .55, 33
+        self.g.grid_tick(0)
+        self.assertEqual(self.c.grid_state, 'placed')
+        self.assertTrue(self.c.start_bar_locked)
+
+    def test_far_start_still_gets_the_normal_approach(self):
+        track = Track([Piece(34, START)] + [Piece(36, STRAIGHT) for _ in range(10)])
+        self.c.set_track(track)
+        self.g.track = track
+        self._begin_at(5, .5, None)
+        self.assertFalse(self.c.grid_force_lap)
+        self.assertFalse(self.c.grid_retry_lap)
+        self.assertNotEqual(self.c.grid_state, 'retry lap')
+
+    def test_first_valid_pose_after_recovery_is_checked(self):
+        self.c.loc.on_track = False
+        self.g.begin_grid()
+        self.g.grid_tick(0)
+        self.assertTrue(self.c.grid_runup_pending)
+        self.c.loc.index, self.c.loc.frac, self.c.loc.sub_id = 0, .52, 33
+        self.c.loc.on_track = True
+        self.c.loc.last_update = time.monotonic()
+        self.c.loc.direction = 1
+        self.c.loc.lane_mm = 23
+        self.g.grid_tick(0)
+        self.assertTrue(self.c.grid_force_lap)
+        self.assertEqual(self.c.grid_state, 'retry lap')
 
     def test_overshoot_retries_only_once_until_next_lap(self):
         self.c.loc.frac = 0.85
