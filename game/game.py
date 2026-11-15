@@ -828,7 +828,12 @@ class Game:
                 c.grid_runup_pending = False
                 if self._grid_runup_too_short(c):
                     c.grid_force_lap = c.grid_retry_lap = True
-                    c.grid_seen_start = loc.index == 0
+                    n = len(self.track.pieces) if self.track else 1
+                    # Only a car on the last piece still has to pass the start
+                    # piece before the forced lap counts. A car already past the
+                    # line (piece 1 lies inside the trigger zone) has passed it
+                    # already; waiting for piece 0 again would cost a second lap.
+                    c.grid_seen_start = n > 1 and loc.index != n - 1
                     self.log(f"{c.name}: too close to the start line; one full lap first", c.color)
             if loc.direction < 0:
                 # driving the wrong way round: turn around, then keep going

@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 from anki import protocol as P
-from anki.track import Track, Piece, START, STRAIGHT, TURN
+from anki.track import Track, Piece, START, START_ID, FINISH_ID, STRAIGHT, TURN
 from game.game import CarState, Game, GRID_RETRY_SPEED
 
 class GridTests(unittest.TestCase):
@@ -66,6 +66,54 @@ class GridTests(unittest.TestCase):
         self.g.grid_tick(0)
         self.assertEqual(self.c.grid_state, 'placed')
         self.assertTrue(self.c.start_bar_locked)
+
+    def _pose_at_distance(self, distance):
+        """Put the car at an unwrapped route distance (no filtering, no engine)."""
+        bar = self.g.track.start_bar_frac
+        index, frac = self.c.loc.filter.pose(distance)
+        self.c.loc.index, self.c.loc.frac = index, frac
+        self.c.loc.sub_id = ((FINISH_ID if frac >= bar else START_ID)
+                             if index == 0 else None)
+        self.c.loc.on_track = True
+        self.c.loc.last_update = time.monotonic()
+        self.c.loc.direction = 1
+        self.c.loc.lane_mm = self.c.loc.code_lane_mm = self.c.grid_lane = 23
+        return index
+
+    def test_car_just_past_the_line_drives_only_one_lap(self):
+        """Piece 1 behind the line is inside the run-up zone.
+
+        A car there has already passed the start piece. Requiring piece 0
+        again would turn the single forced lap into two full laps.
+        """
+        track = Track([Piece(34, START), Piece(36, STRAIGHT), Piece(23, TURN, 'L'),
+                       Piece(36, STRAIGHT), Piece(18, TURN, 'R')], 0.61)
+        self.g.set_track(track)
+        start = self.c.loc.filter.distance(0, track.start_bar_frac) + 300.0
+        self._pose_at_distance(start)
+        self.g.begin_grid()
+        self.g.grid_tick(0)
+        self.assertTrue(self.c.grid_force_lap)
+        self.assertTrue(self.c.grid_seen_start)
+        self.assertEqual(self.c.loc.index, 1)
+
+        last = len(track.pieces) - 1
+        cleared_on_first_last_piece = False
+        distance = start
+        for _ in range(4000):
+            distance += 10.0
+            index = self._pose_at_distance(distance)
+            self.g.grid_tick(0)
+            if index == last:
+                cleared_on_first_last_piece = not self.c.grid_retry_lap
+                break
+        self.assertTrue(cleared_on_first_last_piece)
+        while self.c.grid_state != 'placed' and distance < start + 2 * self.c.loc.filter.length:
+            distance += 10.0
+            self._pose_at_distance(distance)
+            self.g.grid_tick(0)
+        self.assertEqual(self.c.grid_state, 'placed')
+        self.assertLess(distance - start, 1.1 * self.c.loc.filter.length)
 
     def test_far_start_still_gets_the_normal_approach(self):
         track = Track([Piece(34, START)] + [Piece(36, STRAIGHT) for _ in range(10)])
