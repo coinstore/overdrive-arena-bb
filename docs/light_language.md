@@ -94,11 +94,16 @@ turning an effect off.
 
 ### 2.3 Pure engine colours
 
-`FLASH` drives every active channel at full brightness. A mixed colour would
-therefore change hue when it blinks:
+`FLASH` drives every channel in the packet at full brightness and has no
+intensity parameter. A mixed colour would therefore change hue when it blinks:
 
 - orange `(14, 7, 0)` would flash as yellow `(14, 14, 0)`;
 - blue `(0, 4, 14)` would flash as cyan `(0, 14, 14)`.
+
+More importantly, do **not** send all three channels with `FLASH` unless you
+want white. `P.engine_flash()` handles this correctly: channels with a colour
+component get `FLASH`, channels with value 0 get `STEADY 0`. Use the helper
+rather than hand-writing three `FLASH` configs.
 
 To keep the blinking colour identical to the steady player colour, the engine
 palette in `game/colors.py` uses pure levels:
@@ -289,6 +294,8 @@ Never pass 14 as `start`/`end` to `FLASH`.
 - **Don't** use `LIGHT_ENGINE` as if it were a roof light.
 - **Don't** rely on `LIGHT_HEADLIGHTS`; it had no visible effect.
 - **Don't** use `FLASH` for dimming; it has no intensity parameter.
+- **Don't** send all three roof channels as `FLASH`; that blinks white. Use
+  `P.engine_flash()` so zero channels stay `STEADY 0`.
 - **Don't** put battery warnings on the car. They belong in the HUD.
 - **Don't** add unrelated signals (boost, lane change, cooldown) to the car
   lights; that dilutes the language.

@@ -567,14 +567,12 @@ class CarState:
         self._lights_dark = False
         self._health_light_state = None
         self._send(P.lights_off(0x0F))
-        self._send_patterns([
-            (P.LC_RED, P.EFFECT_FLASH, 0, 5, 10),
-            (P.LC_GREEN, P.EFFECT_FLASH, 0, 5, 10),
-            (P.LC_BLUE, P.EFFECT_FLASH, 0, 5, 10),
+        self._send(P.engine_flash(*self.engine_rgb, cycles=10))
+        self._send(P.lights_pattern([
             (P.LC_TAIL, P.EFFECT_STEADY, 0, 0, 0),
             (P.LC_FRONTL, P.EFFECT_STEADY, 0, 0, 0),
             (P.LC_FRONTR, P.EFFECT_STEADY, 0, 0, 0),
-        ])
+        ]))
 
     def update_health_light(self, battle: bool, force: bool = False) -> None:
         """Battle only: steady -> slow blink -> fast blink as HP drops."""

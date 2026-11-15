@@ -134,10 +134,16 @@ def engine_color(r: int, g: int, b: int, effect: int = EFFECT_STEADY, cycles: in
 
 
 def engine_flash(r: int, g: int, b: int, cycles: int = 10, start: int = 0, end: int = 5) -> bytes:
-    """Blink the roof in a player colour. FLASH start/end is a 0..11 time window."""
-    return lights_pattern([(LC_RED, EFFECT_FLASH, start, end, cycles),
-                           (LC_GREEN, EFFECT_FLASH, start, end, cycles),
-                           (LC_BLUE, EFFECT_FLASH, start, end, cycles)])
+    """Blink the roof in a player colour. FLASH has no intensity, so channels
+    without a colour component must be held at STEADY 0; otherwise every channel
+    in the packet flashes and the result is white."""
+    channels = []
+    for channel, value in ((LC_RED, r), (LC_GREEN, g), (LC_BLUE, b)):
+        if value:
+            channels.append((channel, EFFECT_FLASH, start, end, cycles))
+        else:
+            channels.append((channel, EFFECT_STEADY, 0, 0, 0))
+    return lights_pattern(channels)
 
 
 def ping() -> bytes:

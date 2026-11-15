@@ -199,11 +199,19 @@ class PredictionTests(unittest.TestCase):
     def test_countdown_flash_uses_time_window_not_intensity(self):
         self.car._send = Mock()
         self.car.lights_countdown()
+        self.car._send.assert_any_call(P.engine_flash(*self.car.engine_rgb, cycles=10))
         self.car._send.assert_any_call(P.lights_pattern([
-            (P.LC_RED, P.EFFECT_FLASH, 0, 5, 10),
-            (P.LC_GREEN, P.EFFECT_FLASH, 0, 5, 10),
-            (P.LC_BLUE, P.EFFECT_FLASH, 0, 5, 10),
+            (P.LC_TAIL, P.EFFECT_STEADY, 0, 0, 0),
+            (P.LC_FRONTL, P.EFFECT_STEADY, 0, 0, 0),
+            (P.LC_FRONTR, P.EFFECT_STEADY, 0, 0, 0),
         ]))
+
+    def test_engine_flash_holds_zero_colour_channels_off(self):
+        packet = P.engine_flash(0, 0, 14, cycles=10)
+        self.assertEqual(packet[2], 3)
+        self.assertEqual(packet[3:8], bytes([P.LC_RED, P.EFFECT_STEADY, 0, 0, 0]))
+        self.assertEqual(packet[8:13], bytes([P.LC_GREEN, P.EFFECT_STEADY, 0, 0, 0]))
+        self.assertEqual(packet[13:18], bytes([P.LC_BLUE, P.EFFECT_FLASH, 0, 5, 10]))
 
     def test_dead_turns_every_group_off(self):
         self.car._send = Mock()
