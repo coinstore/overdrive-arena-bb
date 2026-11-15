@@ -166,6 +166,56 @@ class PredictionTests(unittest.TestCase):
         victim._send.assert_any_call(P.lights_pattern([(P.LC_TAIL, P.EFFECT_FLASH, 0, 5, 20)]))
         victim._send.assert_any_call(P.engine_flash(*victim.engine_rgb, cycles=10))
 
+    def test_idle_never_turns_on_the_tail_flasher(self):
+        self.car._send = Mock()
+        self.car.lights_idle()
+        self.car._send.assert_any_call(P.lights_off(0x0F))
+        self.car._send.assert_any_call(P.lights_pattern([
+            (P.LC_TAIL, P.EFFECT_STEADY, 0, 0, 0),
+            (P.LC_FRONTL, P.EFFECT_STEADY, 0, 0, 0),
+            (P.LC_FRONTR, P.EFFECT_STEADY, 0, 0, 0),
+        ]))
+        for call in self.car._send.call_args_list:
+            self.assertNotIn(call.args[0], (P.lights_on(P.LIGHT_ENGINE), P.lights_on(0x09)))
+
+    def test_fire_flashes_front_and_expires(self):
+        self.car._send = Mock()
+        self.car.lights_fire(self.now)
+        self.car._send.assert_called_once_with(P.lights_on(P.LIGHT_FRONTLIGHTS))
+        self.car.tick_lights(self.now + 0.4)
+        self.car._send.assert_called_with(P.lights_off(P.LIGHT_FRONTLIGHTS))
+
+    def test_finish_loser_clears_all_six_channels(self):
+        self.car._send = Mock()
+        self.car.lights_finish(False)
+        self.car._send.assert_any_call(P.lights_off(0x0F))
+        self.car._send.assert_any_call(P.lights_pattern([
+            (channel, P.EFFECT_STEADY, 0, 0, 0) for channel in range(3)
+        ]))
+        self.car._send.assert_any_call(P.lights_pattern([
+            (channel, P.EFFECT_STEADY, 0, 0, 0) for channel in range(3, 6)
+        ]))
+
+    def test_countdown_flash_uses_time_window_not_intensity(self):
+        self.car._send = Mock()
+        self.car.lights_countdown()
+        self.car._send.assert_any_call(P.lights_pattern([
+            (P.LC_RED, P.EFFECT_FLASH, 0, 5, 10),
+            (P.LC_GREEN, P.EFFECT_FLASH, 0, 5, 10),
+            (P.LC_BLUE, P.EFFECT_FLASH, 0, 5, 10),
+        ]))
+
+    def test_dead_turns_every_group_off(self):
+        self.car._send = Mock()
+        self.car.lights_dead()
+        self.car._send.assert_any_call(P.lights_off(0x0F))
+        self.car._send.assert_any_call(P.lights_pattern([
+            (channel, P.EFFECT_STEADY, 0, 0, 0) for channel in range(3)
+        ]))
+        self.car._send.assert_any_call(P.lights_pattern([
+            (channel, P.EFFECT_STEADY, 0, 0, 0) for channel in range(3, 6)
+        ]))
+
     def test_finished_tick_sets_lights_once(self):
         self.car._send = Mock()
         self.game.running = True
