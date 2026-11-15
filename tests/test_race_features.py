@@ -9,7 +9,8 @@ from unittest.mock import Mock, patch
 from anki import protocol as P
 from anki.position_filter import PositionFilter
 from anki.track import CarLocalizer, Piece, Track, START, STRAIGHT, TURN, FNF, locate
-from game.game import CarState, Game, PLAYER_COLORS, START_SPEED
+from game.colors import CAR_PAINT, paint_for_model
+from game.game import CarState, DEATH_STOP_S, Game, PLAYER_COLORS, START_SPEED
 from game.records import Records
 from game import inputs as I
 from app import App, PAIRING, RACE, GRID, READY, COUNTDOWN
@@ -162,7 +163,7 @@ class PredictionTests(unittest.TestCase):
         victim.hp = 60
         victim._send = Mock()
         self.game.mode = 'battle'
-        self.game.damage(victim, self.car, 20, self.now, slow=True)
+        self.game.damage(victim, self.car, 20, self.now)
         victim._send.assert_any_call(P.lights_pattern([(P.LC_TAIL, P.EFFECT_FLASH, 0, 5, 20)]))
         victim._send.assert_any_call(P.engine_flash(*victim.engine_rgb, cycles=10))
 
@@ -173,13 +174,38 @@ class PredictionTests(unittest.TestCase):
         victim._send = Mock()
         victim.hp = 60
         self.game.mode = 'battle'
-        self.game.damage(victim, self.car, 20, self.now, slow=True)
+        self.game.damage(victim, self.car, 20, self.now)
         victim.source.rumble.assert_called_once_with(0.9, 0.4, 250)
 
         victim.source.reset_mock()
         victim.hp = 20
-        self.game.damage(victim, self.car, 20, self.now, slow=True)
+        self.game.damage(victim, self.car, 20, self.now)
         victim.source.rumble.assert_called_once_with(1.0, 0.8, 900)
+
+    def test_hits_never_slow_but_death_stops_the_car(self):
+        victim = CarState(SimpleNamespace(model='Victim', battery_mv=0, connected=True, on_charger=False),
+                          1, Mock(), 800)
+        victim._send = Mock()
+        victim.car.set_speed = Mock()
+        self.game.mode = 'battle'
+        victim.hp = 60
+        victim._last_speed_sent = 500
+
+        self.game.damage(victim, self.car, 20, self.now)
+        victim.command_speed(800, self.now + 0.1)
+        self.assertEqual(victim.hp, 40)
+        self.assertEqual(victim.speed_sent(), 800)
+
+        self.game.damage(victim, self.car, 20, self.now + 0.2)
+        victim.command_speed(800, self.now + 0.3)
+        self.assertEqual(victim.speed_sent(), 800)
+
+        self.game.damage(victim, self.car, 20, self.now + 0.4)
+        victim.command_speed(800, self.now + 0.5)
+        self.assertTrue(victim.is_dead(self.now + 0.5))
+        self.assertEqual(victim.speed_sent(), 0)
+        victim.command_speed(800, self.now + DEATH_STOP_S + 0.7)
+        self.assertEqual(victim.speed_sent(), 800)
 
     def test_idle_never_turns_on_the_tail_flasher(self):
         self.car._send = Mock()
@@ -903,6 +929,31 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.pad.rumble.call_count, 4)
         self.assertEqual(self.pad.rumble.call_args_list[0].args, (.35, .35, 140))
         self.assertEqual(self.pad.rumble.call_args_list[-1].args, (.8, .9, 400))
+
+
+class CarPaintTests(unittest.TestCase):
+    def make_car(self, model: str, index: int = 0) -> CarState:
+        vehicle = SimpleNamespace(model=model, connected=True, on_charger=False, battery_mv=0)
+        return CarState(vehicle, index, Mock(), 800)
+
+    def test_ground_shock_and_skull_use_their_real_paints(self):
+        self.assertEqual(self.make_car('Ground Shock', 0).body_color, CAR_PAINT['Ground Shock'])
+        self.assertEqual(self.make_car('Skull', 1).body_color, CAR_PAINT['Skull'])
+
+    def test_body_paint_survives_player_colour_changes(self):
+        car = self.make_car('Ground Shock', 0)
+        self.assertEqual(car.color, PLAYER_COLORS[0])
+        car.set_player_color(1)
+        self.assertEqual(car.color, PLAYER_COLORS[1])
+        self.assertEqual(car.body_color, CAR_PAINT['Ground Shock'])
+
+    def test_unknown_model_falls_back_to_player_colour(self):
+        car = self.make_car('Mystery', 2)
+        self.assertEqual(car.body_color, PLAYER_COLORS[2])
+
+    def test_model_spelling_variants_match(self):
+        self.assertEqual(paint_for_model('Freewheel', (0, 0, 0)), CAR_PAINT['Free Wheel'])
+        self.assertEqual(paint_for_model('X-52', (0, 0, 0)), CAR_PAINT['X52'])
 
 
 if __name__ == '__main__':

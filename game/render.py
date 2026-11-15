@@ -221,7 +221,7 @@ class MapView:
             x, y = self.to_screen(v.x, v.y)
             ang = c.loc.heading()  # type: ignore[union-attr]
             dead = c.is_dead(now)
-            color = (80, 80, 86) if dead else c.color
+            paint = (80, 80, 86) if dead else c.body_color
             if not dead:
                 glow(screen, (x, y), 24, c.color, 0.8)
             # body: rounded rectangle rotated along heading
@@ -232,18 +232,15 @@ class MapView:
             body = [pt(L / 2, -W / 2 + 3), pt(L / 2 - 3, -W / 2), pt(-L / 2 + 2, -W / 2), pt(-L / 2, -W / 2 + 2),
                     pt(-L / 2, W / 2 - 2), pt(-L / 2 + 2, W / 2), pt(L / 2 - 3, W / 2), pt(L / 2, W / 2 - 3)]
             pygame.draw.polygon(screen, (12, 12, 15), [(px + 2, py + 3) for px, py in body])
-            pygame.draw.polygon(screen, color, body)
-            pygame.draw.polygon(screen, (20, 20, 24), body, 2)
+            pygame.draw.polygon(screen, paint, body)
+            # player-coloured outline keeps ownership readable around the real paint
+            pygame.draw.polygon(screen, (20, 20, 24) if dead else c.color, body, 2)
             roof = [pt(4, -W / 2 + 3), pt(-5, -W / 2 + 3), pt(-5, W / 2 - 3), pt(4, W / 2 - 3)]
             pygame.draw.polygon(screen, (28, 30, 36), roof)
             # headlights
             for dy in (-W / 2 + 3, W / 2 - 3):
                 hx, hy = pt(L / 2, dy)
                 pygame.draw.circle(screen, (255, 250, 210), (int(hx), int(hy)), 2)
-            if now < c.stun_until:
-                pygame.draw.circle(screen, WARN, (x, y), 20, 2)
-            elif now < c.penalty_until:
-                pygame.draw.circle(screen, with_alpha(WARN, 160)[:3], (x, y), 18, 1)
             label = small.render(c.name if c.localized() else f"{c.name} · stopped", True, TEXT)
             lx, ly = x - label.get_width() // 2, y - 30
             pygame.draw.rect(screen, (0, 0, 0), (lx - 4, ly - 1, label.get_width() + 8, label.get_height() + 2), border_radius=4)
@@ -282,7 +279,7 @@ class MapView:
             x0, y0 = self.rect.x + 16, self.rect.bottom - 16 - 22 * len(off)
             for i, c in enumerate(off):
                 y = y0 + i * 22
-                pygame.draw.circle(screen, (70, 70, 78), (x0 + 8, y + 8), 7)
+                pygame.draw.circle(screen, c.body_color, (x0 + 8, y + 8), 7)
                 pygame.draw.circle(screen, c.color, (x0 + 8, y + 8), 7, 2)
                 st = c.track_status()
                 msg = {"link lost": "link lost", "off track": "NOT ON THE TRACK", "idle": "stopped, position unknown",
@@ -379,7 +376,8 @@ class Renderer:
     def frame(self) -> None:
         self.screen.fill(BG)
 
-    def draw_car_icon(self, cx: int, cy: int, color, scale: float = 2.2, dead: bool = False) -> None:
+    def draw_car_icon(self, cx: int, cy: int, color, scale: float = 2.2, dead: bool = False,
+                      outline=None) -> None:
         L, W = 22 * scale, 12 * scale
         col = (80, 80, 86) if dead else color
         body = [(cx + L / 2, cy - W / 2 + 3 * scale), (cx + L / 2 - 3 * scale, cy - W / 2), (cx - L / 2 + 2 * scale, cy - W / 2),
@@ -387,7 +385,7 @@ class Renderer:
                 (cx + L / 2 - 3 * scale, cy + W / 2), (cx + L / 2, cy + W / 2 - 3 * scale)]
         pygame.draw.polygon(self.screen, (12, 12, 15), [(x + 3, y + 4) for x, y in body])
         pygame.draw.polygon(self.screen, col, body)
-        pygame.draw.polygon(self.screen, (20, 20, 24), body, 2)
+        pygame.draw.polygon(self.screen, (20, 20, 24) if outline is None or dead else outline, body, 2)
         pygame.draw.rect(self.screen, (28, 30, 36), (cx - 5 * scale, cy - W / 2 + 3 * scale, 9 * scale, W - 6 * scale), border_radius=3)
         for dy in (-W / 2 + 3 * scale, W / 2 - 3 * scale):
             pygame.draw.circle(self.screen, (255, 250, 210), (int(cx + L / 2), int(cy + dy)), int(2 * scale))
@@ -439,7 +437,7 @@ class Renderer:
             if hovering:
                 pygame.draw.rect(self.screen, src_color[hovering[0]], box, 3, border_radius=14)
             pygame.draw.rect(self.screen, c.color, (box.x, box.y, box.width, 8), border_top_left_radius=14, border_top_right_radius=14)
-            self.draw_car_icon(box.centerx, box.y + 36, c.color, 2.4)
+            self.draw_car_icon(box.centerx, box.y + 36, c.body_color, 2.4, outline=c.color)
             self.text(c.name, (box.x + 18, box.y + 62), TEXT, self.big)
             st = c.track_status()
             label = {"on track": "connected  ·  on track", "idle": "connected  ·  stopped (position unknown until it drives)",
@@ -753,10 +751,6 @@ class Renderer:
                 self.chip(cx, box.y + 33, "BOOST", OK)
             elif dead:
                 self.chip(cx, box.y + 33, "DESTROYED", BAD)
-            elif now < c.stun_until:
-                self.chip(cx, box.y + 33, "STUNNED", WARN)
-            elif now < c.penalty_until:
-                self.chip(cx, box.y + 33, "SLOWED", WARN)
             elif c.ai_track_recovery:
                 self.chip(cx, box.y + 33, "FINDING TRACK" if c.ai_track_recovery == "searching" else "PUT BACK / R", WARN)
             elif not c.localized():

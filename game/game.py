@@ -18,7 +18,7 @@ from anki.track import CarLocalizer, Track, STRAIGHT, START, CRISSCROSS, TURN, F
 from anki.vehicle import Vehicle
 from . import inputs as I
 from .battery import BatteryMonitor
-from .colors import ENGINE_COLORS, PLAYER_COLORS
+from .colors import ENGINE_COLORS, PLAYER_COLORS, paint_for_model
 from .records import Records
 
 log = logging.getLogger("game")
@@ -73,13 +73,10 @@ BLASTER_HIT_HALF_WIDTH_MM = 25.0
 BLASTER_TRACK_CORRIDOR_MM = MAX_ABS_OFFSET + BLASTER_HIT_HALF_WIDTH_MM + 2.0
 BLASTER_COOLDOWN_S = 1.0
 BLASTER_DAMAGE = 20
-BLASTER_SLOW_FACTOR = 0.45
-BLASTER_SLOW_S = 1.5
 MINE_COOLDOWN_S = 4.0
 MINE_MAX_ACTIVE = 2
 MINE_LIFE_S = 45.0
 MINE_DAMAGE = 35
-MINE_STUN_S = 1.2
 MINE_TRIGGER_MM = 120.0
 MINE_LANE_MM = 35.0
 MINE_ARM_S = 1.0
@@ -157,6 +154,7 @@ class CarState:
         self.index = index
         self.color_index = index % len(PLAYER_COLORS)
         self.color = PLAYER_COLORS[self.color_index]
+        self.body_color = paint_for_model(car.model, self.color)
         self.engine_rgb = ENGINE_COLORS[self.color_index]
         self.ble = ble
         self._ai_max_speed = max_speed
@@ -217,9 +215,6 @@ class CarState:
         self.kills = 0
         self.deaths = 0
         self.target_offset = 0.0
-        self.penalty_factor = 1.0
-        self.penalty_until = 0.0
-        self.stun_until = 0.0
         self.dead_until = 0.0
         self.fire_ready_at = 0.0
         self.mine_ready_at = 0.0
@@ -412,11 +407,10 @@ class CarState:
         self.ble.fire(self.car.send(payload))
 
     def command_speed(self, desired: float, now: float, force: bool = False) -> None:
-        factor = self.penalty_factor if now < self.penalty_until else 1.0
-        if now < self.stun_until or now < self.dead_until:
+        if now < self.dead_until:
             speed = 0
         else:
-            speed = int(round(desired * factor))
+            speed = int(round(desired))
         speed = max(0, min(2000, self.race_speed_limit, speed))
         speed = max(0, speed - self.fair_penalty)
         accel = ACCEL_STOP if speed == 0 else (ACCEL_DOWN if speed < self._last_speed_sent else ACCEL_UP)
@@ -762,7 +756,7 @@ class Game:
             c.grid_state = "driving"
             c.grid_t0 = now
             c.grid_recovery_t = None
-            c.penalty_until = c.dead_until = c.stun_until = 0.0
+            c.dead_until = 0.0
             c.grid_uturn_t = 0.0
             c.grid_laps = 0
             c.grid_retry_lap = False
@@ -1113,7 +1107,7 @@ class Game:
                 if c.loc._display_distance is not None:
                     c._prev_progress = self._route_progress(c, c.loc._display_distance)
                 c._prev_progress_t = now
-            c.dead_until = c.stun_until = c.penalty_until = 0.0
+            c.dead_until = 0.0
             if c.grid_state in ("off track", "charging", "missed start"):
                 c.ai = False
                 c.source = None
@@ -1642,7 +1636,7 @@ class Game:
 
     def _boost_clear(self, c: CarState, now: float) -> bool:
         if (not c.localized() or not self.track or c.charging or c.ai_track_recovery or c.ai_recovering
-                or c.is_dead(now) or now < c.stun_until or now < c.penalty_until
+                or c.is_dead(now)
                 or c.battery.status == "critical"):
             return False
         loc = c.loc
@@ -1995,7 +1989,7 @@ class Game:
             victim, _d = target
             p1 = victim.world() or p0
             self.lasers.append(Laser(p0[0], p0[1], p1[0], p1[1], shooter.color, now + 0.25, True))
-            self.damage(victim, shooter, BLASTER_DAMAGE, now, slow=True)
+            self.damage(victim, shooter, BLASTER_DAMAGE, now)
             if shooter.source:
                 shooter.source.rumble(0.2, 0.7, 120)
         else:
@@ -2035,25 +2029,20 @@ class Game:
                 if d < MINE_TRIGGER_MM and abs(c.loc.lane_mm - m.lane_mm) < MINE_LANE_MM:  # type: ignore[union-attr]
                     exploded.append(m)
                     self.effect("boom", (m.x, m.y), (255, 150, 60), 0.9)
-                    self.damage(c, m.owner, MINE_DAMAGE, now, stun=True)
+                    self.damage(c, m.owner, MINE_DAMAGE, now, mine=True)
                     self.log(f"{c.name} ran into {m.owner.name}'s mine", (255, 170, 80))
                     break
         for m in exploded:
             if m in self.mines:
                 self.mines.remove(m)
 
-    def damage(self, victim: CarState, attacker: CarState, amount: int, now: float, slow: bool = False, stun: bool = False) -> None:
+    def damage(self, victim: CarState, attacker: CarState, amount: int, now: float, mine: bool = False) -> None:
         if victim.is_dead(now) or victim.hp <= 0:
             return
         victim.hp = max(0, victim.hp - amount)
         w = victim.world()
         self.effect("ring", w, attacker.color, 0.45)
         self.effect("text", w, (255, 235, 200), 0.9, f"-{amount}")
-        if slow:
-            victim.penalty_factor = BLASTER_SLOW_FACTOR
-            victim.penalty_until = now + BLASTER_SLOW_S
-        if stun:
-            victim.stun_until = now + MINE_STUN_S
         fatal = victim.hp <= 0
         if victim.source:
             victim.source.rumble(*(DEATH_RUMBLE if fatal else HIT_RUMBLE))
@@ -2065,7 +2054,7 @@ class Game:
             self.effect("boom", w, victim.color, 1.2)
             self.log(f"{attacker.name} destroyed {victim.name}!", attacker.color)
         else:
-            victim.lights_hit(now, mine=stun)
+            victim.lights_hit(now, mine=mine)
             victim.update_health_light(self.weapons_enabled)
-            if slow:
+            if not mine:
                 self.log(f"{attacker.name} hit {victim.name} (-{amount})", attacker.color)

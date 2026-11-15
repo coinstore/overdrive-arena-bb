@@ -182,10 +182,11 @@ traffic. A player already using the full 2000 command range needs no boost.
 
 - **Blaster** (1 s cooldown): fires straight from the car's nose in its current heading, as far as the
   track surface continues. Only the nearest car whose body lies on that line is hit; other lanes and cars
-  around a corner are not. 20 damage, victim slowed to 45 % for 1.5 s.
+  around a corner are not. 20 damage; hits cost HP only and do not change speed.
 - **Mine** (4 s cooldown, 2 active): dropped in your lane, arms after 1 s, lives 45 s. A car passing within
-  12 cm in that lane takes 35 damage and is stopped for 1.2 s.
+  12 cm in that lane takes 35 damage. Mines also cost HP only and do not stop the car.
 - 100 HP. At 0 the car is destroyed: stopped 3 s with all lights off, then respawns. Kills are counted.
+  Only destruction stops a car; ordinary hits never slow it down.
 - Hits flash the victim's tail lights red and rumble its controller; a destroyed car gives a clearly stronger,
   longer vibration. The shooter's front lights alternate red/green while firing. A destroyed car stays dark
   until it respawns.
@@ -247,7 +248,7 @@ Leaving a curve and reporting off-track also lowers the learned corner limit onc
 
 - **Map**: car sprites with trails, hit rings, explosions, floating damage; mines pulse once armed; cars that
   are off the track, on a charger or have lost their link are listed in the map corner.
-- **Cards**: rank badge, driver, status chip (LINING UP / ON THE LINE / SLOWED / STUNNED / DESTROYED /
+- **Cards**: rank badge, driver, status chip (LINING UP / ON THE LINE / DESTROYED /
   WRONG WAY / OFF TRACK / ON CHARGER), HP or lap progress, speed bar and limit, lane indicator, weapon dials,
   laps with last and best time, battery row.
 - **Kill feed** in player colours, race clock.

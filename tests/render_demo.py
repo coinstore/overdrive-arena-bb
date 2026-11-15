@@ -72,7 +72,7 @@ def main(out_dir: Path):
     cars[0].kills = 2
     game.fire(cars[1], now)          # Mammoth shoots whoever is ahead
     game.drop_mine(cars[2], now - 3)
-    game.damage(cars[0], cars[2], 20, now, slow=True)
+    game.damage(cars[0], cars[2], 20, now)
     game.damage(cars[2], cars[0], 100, now)  # destroyed -> boom
     # advance a few frames so trails/effects/smoothing have state
     for _ in range(12):

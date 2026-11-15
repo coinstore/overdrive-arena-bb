@@ -416,7 +416,7 @@ class App:
                 continue
             c.extra_listener = sc.on_message
             c.lights_idle()
-            c.penalty_until = c.dead_until = c.stun_until = 0
+            c.dead_until = 0
             sc.commanded_speed = SCAN_SPEED
             c.command_speed(SCAN_SPEED, time.monotonic(), force=True)
         if not any(sc.state != "on the charger" for sc in self.scanners.values()):
