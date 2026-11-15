@@ -746,6 +746,16 @@ class CarLocalizer:
                 self.engine_distance = distance
         self._engine_speed = speed
 
+    def set_engine_position(self, distance: float, now: float, speed: Optional[float] = None) -> None:
+        """Move the engine anchor to a constrained position."""
+        anchor = self._unwrap_engine(distance)
+        self._engine_anchor = anchor
+        self._engine_anchor_t = now
+        if speed is not None:
+            self._engine_speed = speed
+        self.engine_distance = anchor
+        self.index, self.frac = self.filter.pose(anchor)
+
     def engine_at(self, now: float) -> Optional[float]:
         if self._engine_anchor is None:
             return None

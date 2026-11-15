@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from pathlib import Path
 from queue import Empty, SimpleQueue
 import random
@@ -26,6 +27,11 @@ PLAYER_COLORS = [(255, 90, 90), (90, 190, 255), (120, 240, 120), (255, 220, 90),
 ENGINE_COLORS = [(14, 0, 0), (0, 4, 14), (0, 14, 0), (14, 10, 0), (12, 0, 14), (14, 5, 0)]
 LANES = (-68.0, -23.0, 23.0, 68.0)
 MAX_ABS_OFFSET = 68.0
+# Physical following constraint between cars in the same lane.
+CAR_MIN_GAP_MM = float(os.environ.get("ARENA_CAR_GAP", "180"))
+FOLLOW_LINK_MM = float(os.environ.get("ARENA_FOLLOW_LINK", "700"))
+FOLLOW_RELEASE_MM = float(os.environ.get("ARENA_FOLLOW_RELEASE", "1100"))
+LANE_OVERLAP_MM = float(os.environ.get("ARENA_LANE_OVERLAP", "30"))
 
 
 def grid_lane_order(count: int) -> tuple[float, ...]:
@@ -224,6 +230,8 @@ class CarState:
         self._lane_retry_t = 0.0
         self._steer_dir = 0                 # last stick direction; one lane step per push
         self.desired_lane: Optional[float] = None   # sticky lane goal (snap / AI / grid)
+        self.following = None                         # car ahead in the same lane
+        self.following_gap_mm: Optional[float] = None
 
     # ---- identity ----
     @property
@@ -1086,12 +1094,113 @@ class Game:
                 c.lap_note = "timing"
                 c._lap_travel = overshoot
 
+    # ---- physical following -------------------------------------------------
+    def _follow_pair_ok(self, rear: CarState, leader: CarState) -> bool:
+        if rear is leader or rear.loc is None or leader.loc is None:
+            return False
+        a, b = rear.loc, leader.loc
+        if not (a.on_track and b.on_track and a.index is not None and b.index is not None):
+            return False
+        if rear.charging or leader.charging or a.direction != b.direction:
+            return False
+        if abs(a.lane_mm - b.lane_mm) > LANE_OVERLAP_MM:
+            return False
+        if any(self.track.pieces[loc.index].kind == CRISSCROSS for loc in (a, b)):
+            return False
+        return True
+
+    def _following_gap(self, rear: CarState, leader: CarState) -> Optional[float]:
+        if rear.loc is None or leader.loc is None:
+            return None
+        a, b = rear.loc.engine_distance, leader.loc.engine_distance
+        if a is None or b is None:
+            return None
+        # Keep the unwrapped distance.  A modulo-only gap would make a car one
+        # whole lap behind look as if it were directly behind the leader.
+        raw = b - a
+        if abs(raw) > FOLLOW_RELEASE_MM:
+            return None
+        length = rear.loc.filter.length
+        return (raw + length / 2) % length - length / 2
+
+    def _reconcile_vehicle_positions(self, now: float) -> None:
+        """Keep same-lane cars in physical order, independent of their speed.
+
+        The filter/engine is per car, so a faster follower would otherwise
+        dead-reckon through a slower leader. A persistent following edge with
+        hysteresis prevents the order from being recomputed from an already
+        overturned prediction.
+        """
+        cars = [c for c in self.cars if c.loc is not None and c.loc.on_track
+                and c.loc.index is not None and not c.charging]
+        if len(cars) < 2:
+            for c in cars:
+                c.following = None
+                c.following_gap_mm = None
+            return
+        for c in cars:
+            leader = c.following
+            if leader is None:
+                continue
+            gap = self._following_gap(c, leader)
+            if (not self._follow_pair_ok(c, leader) or gap is None
+                    or abs(gap) > FOLLOW_RELEASE_MM):
+                c.following = None
+                c.following_gap_mm = None
+            else:
+                c.following_gap_mm = gap
+        for c in cars:
+            if c.following is not None:
+                continue
+            candidates = []
+            for o in cars:
+                if o is c or o.following is c or not self._follow_pair_ok(c, o):
+                    continue
+                gap = self._following_gap(c, o)
+                if gap is None or gap <= 0.0 or gap > FOLLOW_LINK_MM:
+                    continue
+                p = o
+                cycle = False
+                for _ in range(len(cars)):
+                    if p is c:
+                        cycle = True
+                        break
+                    p = p.following
+                    if p is None:
+                        break
+                if not cycle:
+                    candidates.append((gap, o))
+            if candidates:
+                gap, leader = min(candidates, key=lambda item: item[0])
+                c.following = leader
+                c.following_gap_mm = gap
+        for _ in range(2):
+            changed = False
+            for c in cars:
+                leader = c.following
+                if leader is None or leader.loc is None or c.loc is None:
+                    continue
+                gap = self._following_gap(c, leader)
+                c.following_gap_mm = gap
+                if gap is None:
+                    continue
+                if gap < CAR_MIN_GAP_MM:
+                    target = leader.loc.engine_distance - CAR_MIN_GAP_MM
+                    speed = leader.loc._engine_speed
+                    c.loc.set_engine_position(target, now, min(c.loc._engine_speed, speed))
+                    c.following_gap_mm = CAR_MIN_GAP_MM
+                    changed = True
+            if not changed:
+                break
+
     # ---- per frame ----
     def tick(self, dt: float) -> None:
         now = time.monotonic()
         for c in self.cars:
             if c.loc:
                 c.loc.advance(dt, now)
+        if self.running and self.track is not None:
+            self._reconcile_vehicle_positions(now)
         self.fx = [e for e in self.fx if now - e.t0 < e.duration]
         self.update_fair_penalties()
         if not self.running:
