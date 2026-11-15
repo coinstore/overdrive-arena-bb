@@ -476,6 +476,8 @@ class CarLocalizer:
         self.last_code_t = 0.0
         self.last_transition_t = 0.0
         self.last_update = time.monotonic()
+        # Raw poses of recent 0x27 fixes, before dead reckoning moves them.
+        self.position_fixes = deque(maxlen=256)
         self.on_track = False
         self.filter = PositionFilter(track)
         self._sensor_pose = None
@@ -523,6 +525,11 @@ class CarLocalizer:
             self.route_epoch += 1
             self.motion_samples.append((None, now, self.route_epoch))
             return
+        if msg_id == P.MSG_LOCALIZATION_POSITION_UPDATE and self._fixed:
+            # Keep the physical pose of this fix; the engine pose below may be
+            # projected forward and must not be mistaken for a fresh code.
+            self.position_fixes.append((fix_time, self.index, self.frac,
+                                        self.direction, self.on_track))
         if self.index is not None and self._fixed:
             self._sensor_pose = self.index, self.frac, self.sub_id
             self.filter.observe(self.index, self.frac, self.direction * self.speed,

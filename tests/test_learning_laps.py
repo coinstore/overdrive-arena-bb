@@ -31,9 +31,16 @@ class LearningLapTests(unittest.TestCase):
         self.c.loc.direction = direction
         self.g._track_laps(self.c, self.now)
 
+    def finish_fix(self, p=0.6):
+        self.c.loc.position_fixes.append((self.now, int(p), p % 1, 1, True))
+
     def full_lap(self):
-        for p in (0.9, 1.4, 1.9, 2.4, 2.9, 3.4, 3.9, 4.4, 4.9, 5.4, 5.9, 0.2, 0.6):
+        for p in (0.9, 1.4, 1.9, 2.4, 2.9, 3.4, 3.9, 4.4, 4.9, 5.4, 5.9, 0.2):
             self.lap_position(p)
+        self.now += 0.5
+        self.c.loc.index, self.c.loc.frac = 0, 0.6
+        self.finish_fix()
+        self.g._track_laps(self.c, self.now)
 
     def test_clean_full_lap_counts_once(self):
         self.lap_position(0.3)

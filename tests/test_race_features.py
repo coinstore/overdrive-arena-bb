@@ -269,6 +269,9 @@ class PredictionTests(unittest.TestCase):
         with patch('anki.track.locate', return_value=(0, printed)):
             self.car.on_message(P.MSG_LOCALIZATION_POSITION_UPDATE, pos, received_at=now)
 
+    def finish_fix(self, now, frac=.6):
+        self.car.loc.position_fixes.append((now, 0, frac, 1, True))
+
     def test_prediction_crosses_piece_edge_but_delayed_transition_does_not_double_advance(self):
         self.fix(1, .98, self.now)
         self.car.loc.advance(.05)
@@ -295,11 +298,12 @@ class PredictionTests(unittest.TestCase):
         self.car.loc.advance(.2)
         self.assertAlmostEqual(self.car.loc.progress(), position)
 
-    def test_fast_laps_without_any_finish_piece_packets(self):
+    def test_fast_laps_are_validated_by_next_piece_fixes(self):
         route = PositionFilter(self.track)
         origin = route.distance(1, .1)
         self.game.race_start_t = self.now
-        # Two full circuits in one frame's queue, all finish-piece reports lost.
+        # Two full circuits in one frame's queue; the start-piece reports are
+        # missing, but real fixes on the next piece are still behind the line.
         for distance in range(0, int(route.length * 2.5), 100):
             index, frac = route.pose(origin + distance)
             if index != 0:
@@ -317,21 +321,77 @@ class PredictionTests(unittest.TestCase):
         self.game._track_laps(self.car, self.now + .2)
         self.assertEqual(self.car.laps, 0)
 
-    def test_prediction_finishes_observed_circuit_without_finish_packet(self):
+    def test_predicted_circuit_needs_a_finish_fix_after_the_line(self):
         self.fix(0, .4, self.now, speed=800)
         self.car.loc.motion_samples.clear()
         self.car._prev_progress, self.car._prev_progress_t = .4, self.now
         self.car.lap_start_t = self.now - 5
         self.car._lap_travel = len(self.track) - .1
         self.game._track_laps(self.car, self.now + .2)
-        self.assertEqual(self.car.laps, 1)
-        self.assertAlmostEqual(self.car.last_lap_s, 5.07, places=2)
-        # A late notification for the already predicted interval cannot rewind
-        # the lap clock or score again, nor can silent prediction accrue laps.
+        self.assertEqual(self.car.laps, 0)
+        self.assertIsNone(self.car.last_lap_s)
+        # The first real fix behind the line confirms the pending lap.
         self.fix(0, .6, self.now + .1, speed=800)
         self.game._track_laps(self.car, self.now + .3)
+        self.assertEqual(self.car.laps, 1)
+        self.assertAlmostEqual(self.car.last_lap_s, 5.07, places=2)
+        # The same evidence cannot score the next lap again.
         self.game._track_laps(self.car, self.now + 2)
         self.assertEqual(self.car.laps, 1)
+
+    def test_finish_fix_must_be_behind_the_line_and_close(self):
+        cases = [
+            ("before the line", self.now, .4, 0, False),
+            ("far behind the line", self.now, .9, 1, False),
+            ("too late", self.now + 2.0, .6, 0, False),
+        ]
+        for name, fix_t, fix_frac, fix_index, expected in cases:
+            with self.subTest(name=name):
+                self.setUp()
+                self.car.lap_start_t = self.now - 5
+                self.car._prev_progress, self.car._prev_progress_t = .3, self.now - .2
+                self.car._lap_travel = len(self.track) - .2
+                self.car.loc.position_fixes.append((fix_t, fix_index, fix_frac, 1, True))
+                self.game._track_lap_sample(self.car, .7, self.now)
+                self.assertEqual(bool(self.car.laps), expected)
+
+    def test_debounce_rejects_a_crossing_right_after_the_previous_lap(self):
+        self.game.lap_target = 1
+        self.car.lap_start_t = self.now - 5
+        self.car._prev_progress, self.car._prev_progress_t = .3, self.now - .2
+        self.car._lap_travel = len(self.track) - .2
+        self.car.lap_ready_at = self.now + 1.0
+        self.finish_fix(self.now)
+        self.game._track_lap_sample(self.car, .7, self.now)
+        self.assertEqual(self.car.laps, 0)
+        self.assertIsNone(self.car._pending_lap_t)
+        self.assertIsNone(self.game.winner)
+
+        # A clean crossing after the debounce is accepted.
+        self.car.lap_start_t = self.now + .9
+        self.car._prev_progress, self.car._prev_progress_t = .3, self.now + 1.0
+        self.car._lap_travel = len(self.track) - .2
+        self.finish_fix(self.now + 1.2)
+        self.game._track_lap_sample(self.car, .7, self.now + 1.2)
+        self.assertEqual(self.car.laps, 1)
+        self.assertIs(self.game.winner, self.car)
+
+    def test_race_win_waits_for_the_finish_fix(self):
+        self.game.race_start_t = self.now - 5
+        self.game.lap_target = 1
+        self.car.lap_start_t = self.now - 5
+        self.car._prev_progress, self.car._prev_progress_t = .3, self.now - .2
+        self.car._lap_travel = len(self.track) - .2
+        self.game._track_lap_sample(self.car, .7, self.now)
+        self.assertEqual(self.car.laps, 0)
+        self.assertIsNone(self.car.race_finish_s)
+        self.assertIsNone(self.game.winner)
+
+        self.finish_fix(self.now)
+        self.game._resolve_pending_lap(self.car, self.now + .1)
+        self.assertEqual(self.car.laps, 1)
+        self.assertIs(self.game.winner, self.car)
+        self.assertAlmostEqual(self.car.race_finish_s, 4.9, places=2)
 
     def test_prediction_cannot_complete_partial_circuit_or_repeat_during_silence(self):
         self.fix(0, .4, self.now, speed=800)
@@ -396,7 +456,7 @@ class PredictionTests(unittest.TestCase):
         self.game._track_laps(self.car, self.now + 4)
         self.assertEqual(self.car.lap_start_t, started)
 
-    def test_every_displayed_circuit_counts_with_missing_finish_codes_and_speed_error(self):
+    def test_every_displayed_circuit_counts_with_finish_fixes(self):
         import math
         route = self.car.loc.filter
         origin = route.distance(0, .5)
@@ -406,15 +466,21 @@ class PredictionTests(unittest.TestCase):
         with patch('game.game.time.monotonic', return_value=self.now):
             self.game.start()
         self.game.lap_target = 99
+        bar = self.track.start_bar_frac
         for frame in range(1, 1001):
             now = self.now + frame * .02
             index, frac = route.pose(origin + 900 * frame * .02)
-            if frame % 8 == 0 and index != 0 and frame % 56 != 0:
+            if frame % 8 == 0 and (index != 0 or frac >= bar):
                 self.fix(index, frac, now, speed=1200 if frame % 32 == 0 else 900)
             self.car.loc.advance(.02, now)
             self.game._track_laps(self.car, now)
             displayed_laps = max(0, math.floor((self.car.loc._display_distance - origin) / route.length))
-            self.assertEqual(self.car.laps, displayed_laps, f'frame {frame}: visible circuit was not counted')
+            # A lap is confirmed only after the next real fix behind the line,
+            # so the counter may lag the displayed circuit briefly but never
+            # run ahead of it.
+            self.assertLessEqual(self.car.laps, displayed_laps, f'frame {frame}: lap counted without a circuit')
+            self.assertLessEqual(displayed_laps - self.car.laps, 1,
+                                 f'frame {frame}: visible circuit was not recovered')
         self.assertGreaterEqual(self.car.laps, 4)
 
     def test_real_codes_on_figure_eight_count_despite_filter_resets(self):
@@ -606,6 +672,9 @@ class PredictionTests(unittest.TestCase):
 
     def test_duplicate_crossing_does_not_erase_or_double_count_lap(self):
         t = self.now
+        # The lap is confirmed by a real fix just behind the line when the
+        # circuit closes; the duplicate crossings afterwards add nothing.
+        self.finish_fix(self.now + 3.25)
         for p in (.3, .6, .4, .6, 1.2, 2.2, 3.2, 4.2, 5.2, 6.2, .2, .6, .4, .6):
             self.game._track_lap_sample(self.car, p, t)
             t += .3
@@ -637,6 +706,7 @@ class PredictionTests(unittest.TestCase):
         self.car.lap_start_t = self.now - 5
         self.car._prev_progress, self.car._prev_progress_t = .3, self.now - .2
         self.car._lap_travel = len(self.track) - .2
+        self.finish_fix(self.now - .1)
         self.game._track_lap_sample(self.car, .7, self.now)
         record = self.game.records.get(self.track, 'race', 'ai', 'race', 1)
         self.assertAlmostEqual(record['seconds'], 4.9)

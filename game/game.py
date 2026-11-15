@@ -94,6 +94,10 @@ GRID_RECOVERY_DRIVE_S = 1.5  # bounded slow search, followed by a pause before r
 GRID_RECOVERY_PAUSE_S = 2.0
 GRID_MIN_RUNUP_MM = 600.0   # start this close to the bar: drive a full lap before lining up
 START_SPEED = 400           # launch target at GO; capped by the race and personal limits
+LAP_DEBOUNCE_S = 1.0        # ignore another line crossing this soon after the previous one
+FINISH_FIX_WINDOW_S = 1.0   # a lap needs a real position fix this soon after the line
+FINISH_FIX_MAX_AFTER_MM = 600.0  # and the fix must be this close behind the line
+FINISH_FIX_TIME_SLACK_S = 0.15   # measurement time may precede the interpolated crossing slightly
 
 COUNTDOWN_S = 3.0
 BOOST_DURATION_S = 0.6
@@ -184,6 +188,9 @@ class CarState:
         self.start_bar_locked = False
         self.laps = 0
         self.lap_start_t: Optional[float] = None
+        self.lap_ready_at = 0.0            # debounce: next crossing may count from here
+        self._pending_lap_t: Optional[float] = None
+        self._pending_lap_duration: Optional[float] = None
         self.last_lap_s: Optional[float] = None
         self.best_lap_s: Optional[float] = None
         self.race_finish_s: Optional[float] = None
@@ -1067,12 +1074,16 @@ class Game:
             c.last_lap_s = c.best_lap_s = None
             c.race_finish_s = None
             c.lap_start_t = None
+            c.lap_ready_at = 0.0
+            c._pending_lap_t = None
+            c._pending_lap_duration = None
             c._prev_progress = None
             c._prev_progress_t = None
             c._route_epoch = c.loc.route_epoch if c.loc else None
             c.lap_note = "cross start to time a lap"
             if c.loc:
                 c.loc.motion_samples.clear()
+                c.loc.position_fixes.clear()
             c._lap_travel = 0.0
             c._lap_reverse_seen = c.ai_reverse_seen = c._reverse_reports
             c._lap_offtrack_seen = c._ai_offtrack_seen = c._offtrack_reports
@@ -1166,6 +1177,8 @@ class Game:
             c._prev_progress = None
             c._lap_travel = 0.0
             c.lap_start_t = None
+            c._pending_lap_t = None
+            c._pending_lap_duration = None
             c._prev_progress_t = None
             if c.loc:
                 c.loc.motion_samples.clear()
@@ -1183,14 +1196,18 @@ class Game:
                     continue
                 if distance is None or (c._route_epoch is not None and epoch != c._route_epoch):
                     c._prev_progress = c._prev_progress_t = c.lap_start_t = None
+                    c._pending_lap_t = None
+                    c._pending_lap_duration = None
                     c._lap_travel = 0.0
                     self._lap_note(c, "lap reset: position reacquired")
                 c._route_epoch = epoch
                 if distance is not None:
                     progress = self._route_progress(c, distance)
                     self._track_lap_sample(c, progress, received, unwrapped=True)
+            self._resolve_pending_lap(c, now)
             return
         self._track_lap_sample(c, c.loc.progress(), now)
+        self._resolve_pending_lap(c, now)
 
     @staticmethod
     def _route_progress(c: CarState, distance: float) -> float:
@@ -1220,6 +1237,8 @@ class Game:
         if not unwrapped and abs(delta) > allowed:
             # Relocalization/teleport is not proof that the skipped track was driven.
             c.lap_start_t = None
+            c._pending_lap_t = None
+            c._pending_lap_duration = None
             c._lap_travel = 0.0
             return
         c._lap_travel += delta
@@ -1239,25 +1258,21 @@ class Game:
                     fraction = ((distance(bar) - distance(prev)) % total) / travelled
             crossing_t = now if previous_t is None else previous_t + (now - previous_t) * fraction
             overshoot = delta - to_line
+            if crossing_t < c.lap_ready_at:
+                # A crossing immediately after the previous one is a position
+                # bounce, not another lap. Restart the attempt at the line
+                # without extending the debounce window.
+                c.lap_start_t = crossing_t
+                c._lap_travel = overshoot
+                return
+            c.lap_ready_at = crossing_t + LAP_DEBOUNCE_S
             if c.lap_start_t is not None and c._lap_travel - overshoot >= n - 0.15:
                 lap = crossing_t - c.lap_start_t
                 if lap > 0:
-                    c.laps += 1
-                    c.last_lap_s = lap
-                    self.records.record(self.track, self.records_mode, c, "lap", lap)
-                    if c.best_lap_s is None or lap < c.best_lap_s:
-                        c.best_lap_s = lap
-                        self.log(f"{c.name} lap {c.laps}: {lap:.2f}s (best)", c.color)
-                    else:
-                        self.log(f"{c.name} lap {c.laps}: {lap:.2f}s", c.color)
-                    if self.mode == "race" and c.laps >= self.lap_target and c.race_finish_s is None and self.race_start_t is not None:
-                        c.race_finish_s = crossing_t - self.race_start_t
-                        self.records.record(self.track, self.records_mode, c, "race", c.race_finish_s, self.lap_target)
-                    if self.mode == "race" and c.laps >= self.lap_target and (self.winner is None or crossing_t < self.finish_t):
-                        self.winner = c
-                        self.finish_t = crossing_t
-                        self.effect("boom", c.world(), c.color, 1.5)
-                        self.log(f"{c.name} WINS the race!", c.color)
+                    if c._pending_lap_t is not None:
+                        self._resolve_pending_lap(c, now)
+                    c._pending_lap_t = crossing_t
+                    c._pending_lap_duration = lap
                 c.lap_start_t = crossing_t
                 c.lap_note = "timing"
                 c._lap_travel = overshoot
@@ -1265,6 +1280,57 @@ class Game:
                 c.lap_start_t = crossing_t
                 c.lap_note = "timing"
                 c._lap_travel = overshoot
+        self._resolve_pending_lap(c, now)
+
+    def _finish_fix_after_line(self, c: CarState, crossing_t: float) -> bool:
+        """Require a real 0x27 fix just past the line before crediting a lap."""
+        loc = c.loc
+        if self.track is None or loc is None or not loc.position_fixes:
+            return False
+        bar = loc.filter.distance(0, self.track.start_bar_frac)
+        for fix_t, index, frac, direction, on_track in reversed(loc.position_fixes):
+            if fix_t < crossing_t - FINISH_FIX_TIME_SLACK_S:
+                break
+            if fix_t > crossing_t + FINISH_FIX_WINDOW_S or not on_track or direction <= 0:
+                continue
+            after = (loc.filter.distance(index, frac) - bar) % loc.filter.length
+            if after <= FINISH_FIX_MAX_AFTER_MM:
+                return True
+        return False
+
+    def _complete_lap(self, c: CarState, crossing_t: float, lap: float) -> None:
+        c.laps += 1
+        c.last_lap_s = lap
+        self.records.record(self.track, self.records_mode, c, "lap", lap)
+        if c.best_lap_s is None or lap < c.best_lap_s:
+            c.best_lap_s = lap
+            self.log(f"{c.name} lap {c.laps}: {lap:.2f}s (best)", c.color)
+        else:
+            self.log(f"{c.name} lap {c.laps}: {lap:.2f}s", c.color)
+        if self.mode == "race" and c.laps >= self.lap_target and c.race_finish_s is None and self.race_start_t is not None:
+            c.race_finish_s = crossing_t - self.race_start_t
+            self.records.record(self.track, self.records_mode, c, "race", c.race_finish_s, self.lap_target)
+        if self.mode == "race" and c.laps >= self.lap_target and (self.winner is None or crossing_t < self.finish_t):
+            self.winner = c
+            self.finish_t = crossing_t
+            self.effect("boom", c.world(), c.color, 1.5)
+            self.log(f"{c.name} WINS the race!", c.color)
+
+    def _resolve_pending_lap(self, c: CarState, now: float) -> None:
+        """Confirm or drop a lap candidate once real position evidence arrives."""
+        crossing_t = c._pending_lap_t
+        if crossing_t is None:
+            return
+        lap = c._pending_lap_duration
+        if lap is not None and lap > 0 and self._finish_fix_after_line(c, crossing_t):
+            c._pending_lap_t = None
+            c._pending_lap_duration = None
+            self._complete_lap(c, crossing_t, lap)
+            return
+        if now - crossing_t > FINISH_FIX_WINDOW_S:
+            c._pending_lap_t = None
+            c._pending_lap_duration = None
+            self.log(f"{c.name}: lap not confirmed (no position fix past the line)", WARN_COLOR)
 
     # ---- physical following -------------------------------------------------
     def _follow_pair_ok(self, rear: CarState, leader: CarState,
