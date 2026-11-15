@@ -115,9 +115,8 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
    raises the player's held speed afterwards.
 4. **Race**. **Back** (Esc) stops everything and returns to pairing. **F11** toggles fullscreen.
    After a finish, **Start / Options** starts another grid and countdown with the same selections.
-   Replace an off-track car, then press **right-stick / R3 / R**, or click **RECOVER**. The controller
-   retries its player's car plus waiting AI; the on-screen button retries all waiting cars. Each search
-   is limited to 1.5 seconds at up to 300 mm/s. Brake or emergency stop cancels a player's search.
+   Put an off-track car back on the track and nudge it; it resumes automatically as soon as it reads a
+   track transition. No recovery button or key press is needed. Recovery invalidates the current lap.
 
 BLE notifications are timestamped on arrival, before parsing or queueing. Position fixes are applied at
 that time and projected to the current frame; older out-of-order motion updates are ignored. The map
@@ -147,7 +146,6 @@ shows the engine state directly.
 | Drop mine           | Y               | Triangle      | G                 |
 | U-turn              | A               | Cross         | U                 |
 | Straight boost      | Left stick click | L3           | Left Shift        |
-| Retry recovery      | Right stick click | R3          | R                 |
 | Emergency stop      | B               | Circle        | Space             |
 | Speed limit +/- 100 | D-pad up/down   | D-pad up/down | + / -             |
 | Back / quit         | View            | Share         | Esc               |
@@ -235,15 +233,16 @@ A reversal invalidates the current lap. The next forward finish-line crossing st
 lap; it earns no point. A complete forward circuit is required to score again, so U-turns, finish-line
 oscillation, and lost localization cannot create a shortcut lap. Already completed laps are retained.
 
-### Off-track AI recovery
+### Off-track recovery
 
-An explicit off-track report stops that AI immediately. If track messages go stale instead,
+An explicit off-track report stops that car immediately. If track messages go stale instead,
 it tries reading the track at 300 mm/s for at most 1.5 seconds, then stops. There are no endless retries.
-Put a stopped car back on the track and press **R** (or click the right stick) to give waiting AI cars
-one short detection attempt. An AI car that respawns after being destroyed gets that bounded search
-automatically, because its 3-second stop makes the previous track codes stale; no **R** press is needed.
-Fresh track codes resume driving automatically; wrong-way recovery still
-applies. Cars on chargers or with lost connections do not search. Recovery invalidates the current lap.
+Put a stopped car back on the track and nudge it: the car then reports a transition event, which clears the
+waiting state, and driving resumes automatically. No recovery button or key press is needed. Player cars
+roll away at the 400 mm/s start speed; hold the brake or press stop to cancel that. A car that
+respawns after being destroyed gets that bounded search automatically, because its 3-second stop makes
+the previous track codes stale. Wrong-way recovery still applies.
+Cars on chargers or with lost connections do not search. Recovery invalidates the current lap.
 Leaving a curve and reporting off-track also lowers the learned corner limit once per incident, including a report that arrives after a search has begun or between rendered frames. Missing telemetry alone does not count as a cornering failure.
 
 ### What the screen shows

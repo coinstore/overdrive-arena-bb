@@ -98,5 +98,20 @@ class TelemetryTests(unittest.TestCase):
         self.assertTrue(car.loc.on_track)
 
 
+    def test_transition_after_delocalized_restores_on_track(self):
+        self.loc.on_message(P.MSG_LOCALIZATION_POSITION_UPDATE, self.pos, received_at=100)
+        self.assertTrue(self.loc.on_track)
+        self.loc.on_message(P.MSG_VEHICLE_DELOCALIZED, 'delocalized', received_at=101)
+        self.assertFalse(self.loc.on_track)
+
+        # Placing/nudging the car back on the track produces a transition
+        # event even when the motor is off. It must clear the delocalized
+        # state so the car can resume without a recovery button.
+        transition = P.TransitionUpdate(0, 0, 92.7, 0, 0, 0, 0, 0, 0, 0, 0)
+        self.loc.on_message(P.MSG_LOCALIZATION_TRANSITION_UPDATE, transition, received_at=110)
+        self.assertTrue(self.loc.on_track)
+        self.assertEqual(self.loc.last_update, 110)
+
+
 if __name__ == '__main__':
     unittest.main()

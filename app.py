@@ -53,8 +53,8 @@ SCORES = "scores"
 
 CONTROLS_PAIRING = ("pad:  Left/Right car   A claim   B release   X AI   Y scan   L-stick mode   Up/Down laps   Start/Options RACE   Back quit\n"
                     "keys: Left/Right move   Enter take car   Backspace release   Tab AI level/park   T scan track   M mode   Space RACE   Esc quit")
-CONTROLS_RACE = ("pad: R2 gas  L2 brake (speed holds)  stick/LB/RB lanes  X fire  Y mine  A u-turn  B stop  D-pad limit  L-stick boost  R-stick recover  Back pairing\n"
-                 "key: W/S gas/brake (holds)  A/D steer  Q/E lanes  F fire  G mine  U u-turn  Space stop  +/- limit  LShift boost  R recover  Esc pairing  F11 fullscreen")
+CONTROLS_RACE = ("pad: R2 gas  L2 brake (speed holds)  stick/LB/RB lanes  X fire  Y mine  A u-turn  B stop  D-pad limit  L-stick boost  Back pairing\n"
+                 "key: W/S gas/brake (holds)  A/D steer  Q/E lanes  F fire  G mine  U u-turn  Space stop  +/- limit  LShift boost  Esc pairing  F11 fullscreen")
 
 
 class App:
@@ -251,7 +251,7 @@ class App:
             if s.pressed(I.SCORES):
                 self.open_scores()
                 return True
-            if s.pressed(I.RECOVER):
+            if s.pressed(I.SECONDARY):
                 if s.brake() > .5:
                     g.fair_game = not g.fair_game
                 else:
@@ -488,11 +488,7 @@ class App:
     def race_tick(self, dt: float) -> None:
         g = self.game
         assert g is not None
-        if self.click is not None:
-            pos, self.click = self.click, None
-            button = self.renderer.buttons.get("recover")
-            if button and button.collidepoint(pos):
-                g.retry_recovery()
+        self.click = None   # the race screen has no clickable controls
         for s in self.sources:
             if s.pressed(I.BACK):
                 g.stop_all()
@@ -501,8 +497,6 @@ class App:
                 self.state = PAIRING
                 self.status = "back to pairing (cars stopped)"
                 return
-            if s.pressed(I.RECOVER):
-                g.retry_recovery(s)
             if g.finished and s.pressed(I.READY):
                 g.stop_all()
                 self.start_race()

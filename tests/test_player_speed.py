@@ -60,6 +60,14 @@ class PlayerSpeedTests(unittest.TestCase):
         self.car.command_speed(690, self.now + .4)
         self.car.ble.fire.assert_not_called()
 
+    def test_forced_resend_when_target_is_unchanged(self):
+        self.car._last_speed_sent = 400
+        self.car._last_speed_t = self.now - 10
+        self.car._force_speed_send = True
+        self.car.command_speed(400, self.now)
+        self.car.car.set_speed.assert_called_once_with(400, 450)
+        self.assertFalse(self.car._force_speed_send)
+
     def test_hard_stop_clears_the_held_target(self):
         self.car.cruise_speed = 800
         self.car.hard_stop(self.now)

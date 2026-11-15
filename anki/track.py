@@ -700,6 +700,11 @@ class CarLocalizer:
         if self.index is None:
             return
         self.last_transition_t = now
+        # A transition is a real track event: the car just read a piece
+        # boundary. This also restores a car that was reported delocalized and
+        # is now placed back on the track (nudged), so no recovery button is
+        # needed.
+        self.on_track = True
         if self.filter.position is not None and self.on_track and now - self.filter.last_fix <= self.filter.HORIZON:
             predicted = self.filter.predict(now)
             boundaries = [(self.filter.offsets[i], i, 0.0) for i in range(len(self.track.pieces))]

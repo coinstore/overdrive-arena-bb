@@ -721,25 +721,141 @@ class PredictionTests(unittest.TestCase):
             t += .3
         self.assertEqual(self.car.laps, 1)
 
-    def test_player_recovery_is_bounded_and_cancelled_by_brake(self):
+    def test_player_recovery_resumes_on_track_transition(self):
         source = Mock(spec=I.InputSource)
         source.pressed.return_value = False
-        source.brake.return_value = 0
+        source.brake.return_value = 0.0
+        source.throttle.return_value = 0.0
+        source.steer.return_value = 0.0
         self.car.source = source
         self.game.running = True
         self.car.command_speed = Mock()
-        self.car.hard_stop = Mock()
-        self.game.retry_recovery(source)
-        start = self.car.ai_track_recovery_t
-        self.game._human(self.car, .02, start + .1)
-        self.car.command_speed.assert_called_with(300, start + .1)
-        self.game._human(self.car, .02, start + 1.6)
-        self.car.command_speed.assert_called_with(0, start + 1.6)
-        self.game.retry_recovery(source)
-        source.brake.return_value = 1
-        self.game._human(self.car, .02, start + 1.7)
-        self.car.hard_stop.assert_called_once()
-        self.assertEqual(self.car.ai_track_recovery, 'waiting')
+        self.car.loc.index = 0
+        self.car.loc.on_track = False
+        self.car.loc.last_update = self.now - 2
+        self.car.ai_track_recovery = 'waiting'
+        self.car.ai_track_recovery_t = self.now - 1
+
+        # The car is placed back on the track and nudged; no R / RECOVER.
+        transition = P.TransitionUpdate(0, 0, 92.7, 0, 0, 0, 0, 0, 0, 0, 0)
+        self.car.on_message(P.MSG_LOCALIZATION_TRANSITION_UPDATE, transition, received_at=self.now)
+        self.assertTrue(self.car.loc.on_track)
+        self.game._human(self.car, .02, self.now + .1)
+        self.assertEqual(self.car.ai_track_recovery, '')
+        self.assertEqual(self.car.cruise_speed, min(START_SPEED, self.car.max_speed))
+        self.car.command_speed.assert_called_with(self.car.cruise_speed, self.now + .1, force=False)
+
+    def test_player_car_resumes_after_stale_codes_even_without_delocalized(self):
+        source = Mock(spec=I.InputSource)
+        source.pressed.return_value = False
+        source.brake.return_value = 0.0
+        source.throttle.return_value = 0.0
+        source.steer.return_value = 0.0
+        self.car.source = source
+        self.car.command_speed = Mock()
+        self.car.loc.index = 0
+        self.car.loc.on_track = True
+        self.car.loc.last_update = self.now - 3
+        self.car.cruise_speed = 0.0
+
+        transition = P.TransitionUpdate(0, 0, 92.7, 0, 0, 0, 0, 0, 0, 0, 0)
+        self.car.on_message(P.MSG_LOCALIZATION_TRANSITION_UPDATE, transition, received_at=self.now)
+        self.assertGreater(self.car.track_resume_t, 0)
+        self.game._human(self.car, .02, self.now + .1)
+        self.assertEqual(self.car.cruise_speed, min(START_SPEED, self.car.max_speed))
+
+    def test_status_or_collision_also_restarts_a_stopped_player_car(self):
+        source = Mock(spec=I.InputSource)
+        source.pressed.return_value = False
+        source.brake.return_value = 0.0
+        source.throttle.return_value = 0.0
+        source.steer.return_value = 0.0
+        self.car.source = source
+        self.car.command_speed = Mock()
+        self.car.cruise_speed = 0.0
+
+        # Firmware status edge: off track -> on track.
+        self.car.on_message(P.MSG_STATUS_UPDATE, P.VehicleStatus(False, False, False, False),
+                            received_at=self.now)
+        self.car.on_message(P.MSG_STATUS_UPDATE, P.VehicleStatus(True, False, False, False),
+                            received_at=self.now)
+        self.assertGreater(self.car.track_resume_t, 0)
+        self.game._human(self.car, .02, self.now + .1)
+        self.assertEqual(self.car.cruise_speed, min(START_SPEED, self.car.max_speed))
+
+        # A bump while stopped is also a nudge, even while the car is still
+        # off the track and being placed.
+        self.car.cruise_speed = 0.0
+        self.car.track_resume_t = 0.0
+        self.car.loc.on_track = False
+        self.car.on_message(P.MSG_COLLISION_DETECTED, 'collision', received_at=self.now)
+        self.assertGreater(self.car.track_resume_t, 0)
+        self.game._human(self.car, .02, self.now + .1)
+        self.assertEqual(self.car.cruise_speed, min(START_SPEED, self.car.max_speed))
+
+    def test_nudge_restart_reaches_the_motor_through_the_tick_loop(self):
+        source = Mock(spec=I.InputSource)
+        source.pressed.return_value = False
+        source.brake.return_value = 0.0
+        source.throttle.return_value = 0.0
+        source.steer.return_value = 0.0
+        source.alive.return_value = True
+        self.car.source = source
+        self.car.car.set_speed = Mock()
+        self.car.cruise_speed = 0.0
+        self.car.loc.index = 0
+        self.car.loc.on_track = False
+        self.car.loc.last_update = self.now - 3
+        self.game.running = True
+        self.game.phase = 'race'
+
+        transition = P.TransitionUpdate(0, 0, 92.7, 0, 0, 0, 0, 0, 0, 0, 0)
+        self.car.on_message(P.MSG_LOCALIZATION_TRANSITION_UPDATE, transition, received_at=self.now)
+        with patch('game.game.time.monotonic', return_value=self.now + .1):
+            self.game.tick(.02)
+        self.assertEqual(self.car.cruise_speed, START_SPEED)
+        self.assertEqual(self.car.speed_sent(), START_SPEED)
+        self.car.car.set_speed.assert_called_with(START_SPEED, 450)
+
+    def test_second_nudge_resends_an_unchanged_player_target(self):
+        source = Mock(spec=I.InputSource)
+        source.pressed.return_value = False
+        source.brake.return_value = 0.0
+        source.throttle.return_value = 0.0
+        source.steer.return_value = 0.0
+        source.alive.return_value = True
+        self.car.source = source
+        self.car.car.set_speed = Mock()
+        self.car.cruise_speed = START_SPEED
+        self.car._last_speed_sent = START_SPEED
+        self.car._last_speed_t = self.now - 10
+        self.car.loc.index = 0
+        self.car.loc.on_track = False
+        self.car.loc.last_update = self.now - 3
+        self.game.running = True
+        self.game.phase = 'race'
+
+        transition = P.TransitionUpdate(0, 0, 92.7, 0, 0, 0, 0, 0, 0, 0, 0)
+        self.car.on_message(P.MSG_LOCALIZATION_TRANSITION_UPDATE, transition, received_at=self.now)
+        with patch('game.game.time.monotonic', return_value=self.now + .1):
+            self.game.tick(.02)
+        # The held target did not change, but the firmware needs a fresh write.
+        self.car.car.set_speed.assert_called_with(START_SPEED, 450)
+        self.assertFalse(self.car._force_speed_send)
+
+    def test_player_brake_prevents_the_nudge_restart(self):
+        source = Mock(spec=I.InputSource)
+        source.pressed.return_value = False
+        source.brake.return_value = 1.0
+        source.throttle.return_value = 0.0
+        source.steer.return_value = 0.0
+        self.car.source = source
+        self.car.command_speed = Mock()
+        self.car.cruise_speed = 0.0
+        self.car.track_resume_t = self.now
+        self.game._human(self.car, .02, self.now + .1)
+        self.assertEqual(self.car.cruise_speed, 0.0)
+        self.assertEqual(self.car.track_resume_t, 0.0)
 
     def human(self, direction):
         source = Mock(spec=I.InputSource)
@@ -978,12 +1094,11 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(boards[0][0][2], 'overall')
         self.assertEqual([row['car'] for _, rows in boards for row in rows if row['seconds'] in (35, 40)], ['B', 'A'])
 
-    def test_recovery_button_routes_request_to_player(self):
-        self.app.game.retry_recovery = Mock()
+    def test_secondary_button_no_longer_recovers_in_race(self):
         self.app.game.tick = Mock()
-        self.press(I.RECOVER)
+        self.press(I.SECONDARY)
         self.app.race_tick(.02)
-        self.app.game.retry_recovery.assert_called_once_with(self.pad)
+        self.app.game.tick.assert_called_once()
 
     def test_countdown_rumbles_once_per_beat_and_stronger_at_go(self):
         game = self.app.game

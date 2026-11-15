@@ -752,7 +752,7 @@ class Renderer:
             elif dead:
                 self.chip(cx, box.y + 33, "DESTROYED", BAD)
             elif c.ai_track_recovery:
-                self.chip(cx, box.y + 33, "FINDING TRACK" if c.ai_track_recovery == "searching" else "PUT BACK / R", WARN)
+                self.chip(cx, box.y + 33, "FINDING TRACK" if c.ai_track_recovery == "searching" else "NUDGE TO RESUME", WARN)
             elif not c.localized():
                 st = c.track_status()
                 self.chip(cx, box.y + 33, {"link lost": "LINK LOST", "off track": "OFF TRACK", "idle": "STOPPED", "charging": "ON CHARGER"}.get(st, st.upper()),
@@ -820,9 +820,6 @@ class Renderer:
             img.set_alpha(255 if age < 6 else 140)
             self.screen.blit(img, (x, y))
             y += 17
-        if game.phase == "race" and not game.finished:
-            self.buttons["recover"] = self.button(self.map_rect().x + 14, self.map_rect().bottom - 60,
-                                                  285, 46, "RECOVER", "Right-stick / R", WARN)
         y = pr.bottom - 14 - 15 * (controls.count("\n") + 1)
         for line in controls.split("\n"):
             y += self.text(line, (x, y), FAINT, self.small) + 1

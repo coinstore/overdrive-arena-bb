@@ -16,12 +16,12 @@ AXIS_MAX = 32767.0
 
 # edge-triggered actions
 (STOP, UTURN, FIRE, MINE, LANE_LEFT, LANE_RIGHT, LIMIT_UP, LIMIT_DOWN,
- MENU_LEFT, MENU_RIGHT, SELECT, RELEASE, TOGGLE_AI, READY, BACK, SCAN, TOGGLE_MODE, RECOVER, BOOST, FAIR_GAME, SCORES) = range(21)
+ MENU_LEFT, MENU_RIGHT, SELECT, RELEASE, TOGGLE_AI, READY, BACK, SCAN, TOGGLE_MODE, SECONDARY, BOOST, FAIR_GAME, SCORES) = range(21)
 
 ACTION_NAMES = {STOP: "stop", UTURN: "u-turn", FIRE: "fire", MINE: "mine", LANE_LEFT: "lane left",
                 LANE_RIGHT: "lane right", LIMIT_UP: "limit +", LIMIT_DOWN: "limit -", MENU_LEFT: "menu left",
                 MENU_RIGHT: "menu right", SELECT: "select", RELEASE: "release", TOGGLE_AI: "AI/parked",
-                READY: "ready", BACK: "back", SCAN: "scan track", TOGGLE_MODE: "battle/race mode", RECOVER: "retry off-track AI", BOOST: "straight boost"}
+                READY: "ready", BACK: "back", SCAN: "scan track", TOGGLE_MODE: "battle/race mode", SECONDARY: "speed/fair (pairing)", BOOST: "straight boost"}
 
 
 class InputSource:
@@ -56,7 +56,7 @@ class Pad(InputSource):
         RELEASE: (pygame.CONTROLLER_BUTTON_B,),
         TOGGLE_AI: (pygame.CONTROLLER_BUTTON_X,),
         READY: (pygame.CONTROLLER_BUTTON_START,),
-        RECOVER: (pygame.CONTROLLER_BUTTON_RIGHTSTICK,),
+        SECONDARY: (pygame.CONTROLLER_BUTTON_RIGHTSTICK,),
         BOOST: (pygame.CONTROLLER_BUTTON_LEFTSTICK,),
         BACK: (pygame.CONTROLLER_BUTTON_BACK,),
         SCAN: (pygame.CONTROLLER_BUTTON_Y,),
@@ -146,7 +146,7 @@ class Keyboard(InputSource):
         MENU_LEFT: (pygame.K_LEFT, pygame.K_a), MENU_RIGHT: (pygame.K_RIGHT, pygame.K_d),
         SELECT: (pygame.K_RETURN, pygame.K_KP_ENTER), RELEASE: (pygame.K_BACKSPACE,), TOGGLE_AI: (pygame.K_TAB,),
         READY: (pygame.K_SPACE,),
-        RECOVER: (pygame.K_r,),
+        SECONDARY: (pygame.K_r,),
         BOOST: (pygame.K_LSHIFT,),
         BACK: (pygame.K_ESCAPE,), SCAN: (pygame.K_t,), TOGGLE_MODE: (pygame.K_m,),
     }

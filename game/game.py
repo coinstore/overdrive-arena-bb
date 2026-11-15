@@ -100,6 +100,8 @@ GRID_MIN_RUNUP_MM = 600.0   # start this close to the bar: drive a full lap befo
 WRONG_WAY_UTURN_S = 4.0     # do not repeat an automatic U-turn before the car had time to flip
 WRONG_WAY_SPEED = 300       # keep the correction slow enough for the firmware U-turn to settle
 START_SPEED = 400           # launch target at GO; capped by the race and personal limits
+PLAYER_RESUME_WINDOW_S = 1.0  # a nudged player car rolls away without a throttle press
+PLAYER_RESUME_STALE_S = 1.0   # stale codes before a transition also count as a nudge
 LAP_DEBOUNCE_S = 1.0        # ignore another line crossing this soon after the previous one
 FINISH_FIX_WINDOW_S = 1.0   # a lap needs a real position fix this soon after the line
 FINISH_FIX_MAX_AFTER_MM = 600.0  # and the fix must be this close behind the line
@@ -241,7 +243,7 @@ class CarState:
         self.ai_curve_test_speed = 0.0
         self.ai_track_recovery = ""       # '', 'searching', 'waiting'
         self.ai_track_recovery_t = 0.0
-        self.ai_manual_track_retry = False
+        self.ai_search_anyway = False     # a nudge allows one bounded search off track
         self.boost_until = 0.0
         self.boost_ready_at = 0.0
         self.front_until = 0.0
@@ -252,6 +254,9 @@ class CarState:
 
         self._last_speed_sent = 0
         self._last_speed_t = 0.0
+        self._force_speed_send = False       # resend even when the held target is unchanged
+        self.track_resume_t = 0.0           # last off-track -> on-track transition
+        self._status_on_track: Optional[bool] = None
         self._last_drive_input = 0.0        # throttle minus brake; detects edge/release
         self.cruise_speed = 0.0             # player's held target speed (R2/L2 or W/S), not a direct trigger value
         self.manual_reverse = False         # player pressed U-turn on purpose: leave the automatic correction off
@@ -339,13 +344,55 @@ class CarState:
             self.battery.charging = decoded.on_charger
             if decoded.on_charger and self.loc is not None:
                 self.loc.on_track = False
+            if (not self.start_bar_locked and decoded.on_track and not decoded.on_charger
+                    and self._status_on_track is False):
+                self.track_resume_t = received_at
+                self._force_speed_send = True
+                log.info("%s: nudge detected (status on_track)", self.name)
+            self._status_on_track = decoded.on_track
+        elif msg_id == P.MSG_COLLISION_DETECTED:
+            if not self.start_bar_locked:
+                if self.source is not None and self.cruise_speed <= 0:
+                    # A bump while the player car is stopped counts as a nudge,
+                    # including while it is still off the track and being placed.
+                    self.track_resume_t = received_at
+                    self._force_speed_send = True
+                    log.info("%s: nudge detected (collision)", self.name)
+                if (self.ai and self.ai_track_recovery == "waiting" and self.car.connected
+                        and not self.charging):
+                    # The nudge is a track signal even when no code was read
+                    # yet: allow one bounded slow search so the AI can find
+                    # the track without a second push.
+                    self.ai_track_recovery = "searching"
+                    self.ai_track_recovery_t = received_at
+                    self.ai_search_anyway = True
+                    self._force_speed_send = True
+                    log.info("%s: nudge detected (collision), searching", self.name)
         elif msg_id == P.MSG_SPEED_UPDATE and isinstance(decoded, P.SpeedUpdate) and self.loc is not None:
             self.loc.speed = float(decoded.actual_mm_s)
             self.loc.filter.set_speed(self.loc.direction * self.loc.speed, received_at)
             self.loc.rebase_engine_speed(self.loc.direction * self.loc.speed, received_at)
         if self.loc is not None:
+            was_on_track = self.loc.on_track
+            stale_gap = received_at - self.loc.last_update
             self.loc.on_message(msg_id, decoded, received_at=received_at,
                                 measurement_delay=self.position_lead_s)
+            if (not self.start_bar_locked
+                    and msg_id in (P.MSG_LOCALIZATION_POSITION_UPDATE,
+                                   P.MSG_LOCALIZATION_TRANSITION_UPDATE)
+                    and self.loc.on_track
+                    and (not was_on_track or stale_gap >= PLAYER_RESUME_STALE_S)):
+                # The car was placed back on the track and nudged. A player
+                # car uses this to roll away by itself; AI cars already resume
+                # through their track-recovery state.
+                self.track_resume_t = received_at
+                # The motor may have stopped while the car was off track. A
+                # fresh write is needed for AI and player cars alike, even when
+                # the target speed itself did not change.
+                self._force_speed_send = True
+                if self.source is not None and self.cruise_speed <= 0:
+                    log.info("%s: nudge detected (msg 0x%02X, code gap %.2fs)",
+                             self.name, msg_id, max(0.0, stale_gap))
             if (msg_id == P.MSG_LANE_CHANGE_UPDATE and isinstance(decoded, dict)
                     and "offset_mm" in decoded and "target_mm" in decoded):
                 self.loc.on_lane_update(float(decoded["offset_mm"]),
@@ -427,8 +474,12 @@ class CarState:
         # rate; zeroing an emergency stop is always immediate.
         due = now - self._last_speed_t >= SPEED_SEND_INTERVAL_S
         # A release/reversal must land exactly on the held target, not wait
-        # for the next sparse update.
-        if zeroing or (force and speed != self._last_speed_sent) or ((changed or stale) and due):
+        # for the next sparse update. A car that was stopped off-track needs a
+        # fresh write even when the held target itself did not change; the
+        # firmware does not resume an old target by itself.
+        forced = force or self._force_speed_send
+        if zeroing or (forced and speed > 0) or ((changed or stale) and due):
+            self._force_speed_send = False
             self._last_speed_sent, self._last_speed_t = speed, now
             self.ble.fire(self.car.set_speed(speed, accel))
         if speed == 0 and self.loc is not None:
@@ -1527,10 +1578,9 @@ class Game:
                 self.log(f"{c.name} respawned", c.color)
                 if c.ai:
                     # The 3 s stop leaves the last track code stale. Give the
-                    # AI a fresh bounded search instead of waiting for R.
+                    # car a fresh bounded search instead of waiting for a nudge.
                     c.ai_track_recovery = "searching"
                     c.ai_track_recovery_t = now
-                    c.ai_manual_track_retry = False
             if c.source is not None and c.source.alive():
                 self._human(c, dt, now)
             elif c.ai:
@@ -1553,6 +1603,21 @@ class Game:
                 return
             if self._recover_ai_track(c, now):
                 return
+        if c.track_resume_t:
+            if (now - c.track_resume_t <= PLAYER_RESUME_WINDOW_S
+                    and not c.charging and not c.is_dead(now)
+                    and src.brake() <= 0.1):
+                # A player car placed back on the track and nudged rolls away
+                # by itself, like the official app. Braking or moving the
+                # throttle afterwards still works normally.
+                if c.cruise_speed <= 0:
+                    c.cruise_speed = min(START_SPEED, c.max_speed)
+                # Re-send the target even when it did not change: the car may
+                # have stopped its motor while it was off track.
+                c._force_speed_send = True
+                log.info("%s: nudged back onto the track, resuming at %d mm/s",
+                         c.name, c.cruise_speed)
+            c.track_resume_t = 0.0
         if src.pressed(I.LIMIT_UP):
             c.max_speed = min(2000, c.max_speed + 100)
         if src.pressed(I.LIMIT_DOWN):
@@ -1842,45 +1907,11 @@ class Game:
             c.ai_curve_test_speed = min(c.ai_curve_test_speed, loc.speed, c.speed_sent())
         c.ai_curve_last_frac = loc.frac
 
-    def retry_recovery(self, source=None) -> None:
-        """Retry waiting AI and the requesting player's car after replacement."""
-        self.retry_ai_recovery()
-        if not self.running or self.finished or not self.track:
-            return
-        now = time.monotonic()
-        for c in self.cars:
-            if c.source is None or (source is not None and c.source is not source):
-                continue
-            if not c.car.connected or c.charging:
-                continue
-            if self.wrong_way(c) and not c.manual_reverse:
-                c.u_turn()
-                c.last_uturn_t = now
-            if not c.localized() or now - c.loc.last_update >= 1.5 or c.ai_track_recovery:
-                c.ai_track_recovery = "searching"
-                c.ai_track_recovery_t = now
-                c.ai_manual_track_retry = True
-                c._prev_progress = c.lap_start_t = None
-                c._lap_travel = 0.0
-                self.log(f"{c.name}: retrying track detection", c.color)
-
-    def retry_ai_recovery(self) -> None:
-        """User has replaced a stopped car; allow one bounded attempt to read codes."""
-        if not self.running or self.finished or not self.track:
-            return
-        now = time.monotonic()
-        for c in self.cars:
-            if c.ai and c.ai_track_recovery == "waiting" and c.car.connected and not c.charging:
-                c.ai_track_recovery = "searching"
-                c.ai_track_recovery_t = now
-                c.ai_manual_track_retry = True
-                self.log(f"{c.name}: retrying track detection", c.color)
-
     def _recover_ai_track(self, c: CarState, now: float) -> bool:
         """Return True while normal driving must yield to track recovery."""
         if c.is_dead(now):
             # A destruction stop is intentional, not a lost track. Do not turn
-            # its stale codes into a "waiting for R" recovery state.
+            # its stale codes into a "waiting for a nudge" recovery state.
             c.command_speed(0, now)
             return True
         loc = c.loc
@@ -1901,12 +1932,13 @@ class Game:
         if fresh and (not c.ai_track_recovery or loc.last_update > c.ai_track_recovery_t):
             if c.ai_track_recovery:
                 c.ai_track_recovery = ""
+                c.ai_search_anyway = False
                 c.ai_forward_since = None
                 self.log(f"{c.name}: track found, resuming", c.color)
             return False
         if not c.ai_track_recovery:
             c.ai_track_recovery_t = now
-            c.ai_manual_track_retry = False
+            c.ai_search_anyway = False
             # A positive delocalized report means stop; missing telemetry alone
             # gets one 1.5 s search at 300 mm/s. Never keep driving blindly.
             can_probe = available and loc.on_track and (c.speed_sent() > 0 or not c.ai_has_driven)
@@ -1915,11 +1947,12 @@ class Game:
             c._lap_travel = 0.0
             c.ai_learning_piece = None
             c.ai_clean_corners = 0
-            self.log(f"{c.name}: {'searching for track codes' if c.ai_track_recovery == 'searching' else 'put back on track, press R / right-stick click'}", WARN_COLOR)
+            self.log(f"{c.name}: {'searching for track codes' if c.ai_track_recovery == 'searching' else 'put back on track and nudge to resume'}", WARN_COLOR)
         if c.ai_track_recovery == "searching" and (not available or now - c.ai_track_recovery_t >= 1.5
-                                                  or (not loc.on_track and not c.ai_manual_track_retry)):
+                                                  or (not loc.on_track and not c.ai_search_anyway)):
             c.ai_track_recovery = "waiting"
-            self.log(f"{c.name}: stopped; put back on track, press R / right-stick click", WARN_COLOR)
+            c.ai_search_anyway = False
+            self.log(f"{c.name}: stopped; put back on track and nudge to resume", WARN_COLOR)
         if c.car.connected:
             c.command_speed(min(300, c.max_speed) if c.ai_track_recovery == "searching" else 0, now)
         else:

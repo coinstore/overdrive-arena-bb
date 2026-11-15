@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from anki import protocol as P
 from anki.track import Piece, Track, START, STRAIGHT, TURN
 from game.game import CarState, Game, MAX_HP
 
@@ -218,20 +219,58 @@ class LearningLapTests(unittest.TestCase):
         self.g._recover_ai_track(self.c, now + 1)
         self.assertEqual(self.c.ai_corner_limit, 680)
 
-    def test_explicit_retry_moves_then_fresh_codes_resume(self):
+    def test_transition_after_delocalize_resumes_waiting_car(self):
         now = time.monotonic()
+        self.c.loc.index = 0
         self.c.loc.on_track = False
+        self.c.loc.last_update = now - 2
+        self.c.ai_track_recovery, self.c.ai_track_recovery_t = 'waiting', now - 1
         self.c.command_speed = Mock()
-        self.g._recover_ai_track(self.c, now)
-        self.g.running = self.c.ai = True
-        self.g.retry_ai_recovery()
-        start = self.c.ai_track_recovery_t
-        self.g._recover_ai_track(self.c, start + 0.1)
-        self.c.command_speed.assert_called_with(300, start + 0.1)
-        self.c.loc.on_track = True
-        self.c.loc.last_update = start + 0.2
-        self.assertFalse(self.g._recover_ai_track(self.c, start + 0.3))
+
+        # Placing the car back on the track and nudging it produces a
+        # transition event even when the motor is off.
+        transition = P.TransitionUpdate(0, 0, 92.7, 0, 0, 0, 0, 0, 0, 0, 0)
+        self.c.on_message(P.MSG_LOCALIZATION_TRANSITION_UPDATE, transition, received_at=now)
+        self.assertTrue(self.c.loc.on_track)
+        self.assertTrue(self.c._force_speed_send)
+
+        self.assertFalse(self.g._recover_ai_track(self.c, now + 0.1))
         self.assertEqual(self.c.ai_track_recovery, '')
+        self.c.command_speed.assert_not_called()
+
+    def test_ai_nudge_forces_a_fresh_speed_without_recovery_state(self):
+        now = time.monotonic()
+        self.c.ai = True
+        self.c.loc.index = 0
+        self.c.loc.on_track = False
+        self.c.loc.last_update = now - 3
+        self.c.ai_track_recovery = ''
+
+        transition = P.TransitionUpdate(0, 0, 92.7, 0, 0, 0, 0, 0, 0, 0, 0)
+        self.c.on_message(P.MSG_LOCALIZATION_TRANSITION_UPDATE, transition, received_at=now)
+        self.assertTrue(self.c.loc.on_track)
+        self.assertTrue(self.c._force_speed_send)
+
+    def test_ai_collision_nudge_searches_even_while_off_track(self):
+        now = time.monotonic()
+        self.c.ai = True
+        self.c.loc.on_track = False
+        self.c.loc.last_update = now - 3
+        self.c.ai_track_recovery = 'waiting'
+        self.c.ai_track_recovery_t = now - 1
+        self.c.command_speed = Mock()
+
+        self.c.on_message(P.MSG_COLLISION_DETECTED, 'collision', received_at=now)
+        self.assertEqual(self.c.ai_track_recovery, 'searching')
+        self.assertTrue(self.c.ai_search_anyway)
+        self.assertTrue(self.c._force_speed_send)
+
+        self.assertTrue(self.g._recover_ai_track(self.c, now + .1))
+        self.c.command_speed.assert_called_with(300, now + .1)
+        self.assertTrue(self.g._recover_ai_track(self.c, now + 1.6))
+        self.c.command_speed.assert_called_with(0, now + 1.6)
+        self.assertEqual(self.c.ai_track_recovery, 'waiting')
+        self.assertFalse(self.c.ai_search_anyway)
 
     def test_old_codes_cannot_resume_waiting_car(self):
         now = time.monotonic()
@@ -247,9 +286,6 @@ class LearningLapTests(unittest.TestCase):
         self.c.car.on_charger = True
         self.assertTrue(self.g._recover_ai_track(self.c, now))
         self.c.command_speed.assert_called_with(0, now)
-        self.g.running = self.c.ai = True
-        self.g.retry_ai_recovery()
-        self.assertEqual(self.c.ai_track_recovery, 'waiting')
         self.c.car.on_charger = False
         self.c.car.connected = False
         self.c.command_speed.reset_mock()
