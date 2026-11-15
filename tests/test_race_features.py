@@ -741,6 +741,75 @@ class PredictionTests(unittest.TestCase):
         self.car.hard_stop.assert_called_once()
         self.assertEqual(self.car.ai_track_recovery, 'waiting')
 
+    def human(self, direction):
+        source = Mock(spec=I.InputSource)
+        source.pressed.return_value = False
+        source.throttle.return_value = 0.0
+        source.brake.return_value = 0.0
+        source.steer.return_value = 0.0
+        self.car.source = source
+        self.car.loc.on_track = True
+        self.car.loc.index = 1
+        self.car.loc.direction = direction
+        self.car.loc.last_update = time.monotonic()
+        self.car.cruise_speed = 800.0
+        self.car._last_speed_sent = 800
+        self.car.u_turn = Mock()
+        self.car.command_speed = Mock()
+        return source
+
+    def test_player_wrong_way_is_corrected_automatically(self):
+        self.human(-1)
+        self.game._human(self.car, .02, self.now)
+        self.car.u_turn.assert_called_once()
+        self.assertEqual(self.car.last_uturn_t, self.now)
+
+        self.car.u_turn.reset_mock()
+        self.game._human(self.car, .02, self.now + 3.9)
+        self.car.u_turn.assert_not_called()
+        self.game._human(self.car, .02, self.now + 4.0)
+        self.car.u_turn.assert_called_once()
+
+    def test_player_wrong_way_speed_is_capped_for_correction(self):
+        self.human(-1)
+        self.game._human(self.car, .02, self.now)
+        self.car.command_speed.assert_called_with(300, self.now, force=False)
+
+    def test_manual_u_turn_toggles_reverse_mode_without_rumble(self):
+        source = self.human(1)
+        source.pressed.side_effect = lambda action: action == I.UTURN
+        self.game._human(self.car, .02, self.now)
+        self.car.u_turn.assert_called_once()
+        self.assertTrue(self.car.manual_reverse)
+        source.rumble.assert_not_called()
+
+        source.pressed.side_effect = None
+        source.pressed.return_value = False
+        self.car.loc.direction = -1
+        self.car.u_turn.reset_mock()
+        for offset in (1.0, 5.0, 20.0):
+            self.game._human(self.car, .02, self.now + offset)
+        self.car.u_turn.assert_not_called()
+
+        source.pressed.side_effect = lambda action: action == I.UTURN
+        self.game._human(self.car, .02, self.now + 21.0)
+        self.assertFalse(self.car.manual_reverse)
+        self.car.u_turn.assert_called_once()      # the manual turn itself
+        self.assertEqual(self.car.last_uturn_t, self.now + 21.0)
+
+        source.pressed.side_effect = None
+        source.pressed.return_value = False
+        self.car.u_turn.reset_mock()
+        self.game._human(self.car, .02, self.now + 24.9)
+        self.car.u_turn.assert_not_called()       # let the manual flip settle
+        self.game._human(self.car, .02, self.now + 25.1)
+        self.car.u_turn.assert_called_once()      # automatic correction resumes
+
+    def test_forward_player_is_not_turned_around(self):
+        self.human(1)
+        self.game._human(self.car, .02, self.now)
+        self.car.u_turn.assert_not_called()
+
     def test_finished_race_is_recorded_once_and_ranked_by_finish_time(self):
         self.game.race_start_t = self.now - 5
         self.game.lap_target = 1

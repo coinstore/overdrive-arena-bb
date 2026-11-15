@@ -97,6 +97,8 @@ GRID_CRAWL = 300            # 250 mm/s loses track codes on some pieces
 GRID_RECOVERY_DRIVE_S = 1.5  # bounded slow search, followed by a pause before retrying
 GRID_RECOVERY_PAUSE_S = 2.0
 GRID_MIN_RUNUP_MM = 600.0   # start this close to the bar: drive a full lap before lining up
+WRONG_WAY_UTURN_S = 4.0     # do not repeat an automatic U-turn before the car had time to flip
+WRONG_WAY_SPEED = 300       # keep the correction slow enough for the firmware U-turn to settle
 START_SPEED = 400           # launch target at GO; capped by the race and personal limits
 LAP_DEBOUNCE_S = 1.0        # ignore another line crossing this soon after the previous one
 FINISH_FIX_WINDOW_S = 1.0   # a lap needs a real position fix this soon after the line
@@ -252,6 +254,8 @@ class CarState:
         self._last_speed_t = 0.0
         self._last_drive_input = 0.0        # throttle minus brake; detects edge/release
         self.cruise_speed = 0.0             # player's held target speed (R2/L2 or W/S), not a direct trigger value
+        self.manual_reverse = False         # player pressed U-turn on purpose: leave the automatic correction off
+        self.last_uturn_t = 0.0             # last manual or automatic U-turn; prevents double commands
         self._last_lane_sent = 0.0
         self._last_lane_t = 0.0
         self._last_steer_t = 0.0
@@ -770,6 +774,8 @@ class Game:
             c.grid_bar_pending_t = 0.0
             c.start_bar_locked = False
             c.cruise_speed = 0.0
+            c.manual_reverse = False
+            c.last_uturn_t = 0.0
             c.set_lane(c.grid_lane, now)
             c._last_lane_sent = 999.0     # force a lane command once the car is localized
             if c.car.connected and not c.charging:
@@ -1097,6 +1103,8 @@ class Game:
             c.boost_until = 0.0
             c.boost_ready_at = now + 3.0
             c.cruise_speed = 0.0
+            c.manual_reverse = False
+            c.last_uturn_t = 0.0
             if (c.grid_state == "placed" and c.map_position_known() and c.loc is not None
                     and c.loc.direction > 0 and c.loc.index == 0
                     and self.track.start_bar_frac <= c.loc.frac < self.track.start_bar_frac + 0.1):
@@ -1136,6 +1144,8 @@ class Game:
             c.grid_force_lap = False
             c.grid_seen_start = False
             c.grid_runup_pending = False
+            c.manual_reverse = False
+            c.last_uturn_t = 0.0
         for c in self.cars:
             c.hard_stop(now)
             c.lights_idle()
@@ -1538,6 +1548,15 @@ class Game:
             c.max_speed = max(200, c.max_speed - 100)
         if src.pressed(I.BOOST):
             self.request_boost(c, now)
+        if src.pressed(I.UTURN):
+            # Variant B: a press deliberately switches to driving against the
+            # track direction; the next press hands control back to the
+            # automatic wrong-way correction.
+            c.u_turn()
+            c.last_uturn_t = now
+            c.manual_reverse = not c.manual_reverse
+            self.log(f"{c.name}: reverse mode {'on' if c.manual_reverse else 'off'}", c.color)
+        correcting_wrong_way = self.wrong_way(c) and not c.manual_reverse
         if src.pressed(I.STOP):
             c.hard_stop(now)
             src.rumble(0.8, 0.8, 150)
@@ -1557,6 +1576,10 @@ class Game:
             if down > 0 or c.cruise_speed <= 0:
                 c.boost_until = 0.0
             target = self.boost_target(c, c.cruise_speed, now) if c.cruise_speed > 0 else 0.0
+            if correcting_wrong_way:
+                # A slow car flips reliably; the driver's own reverse mode is
+                # not capped.
+                target = min(target, WRONG_WAY_SPEED)
             edge = (c._last_drive_input == 0.0) != (drive == 0.0)
             reversal = c._last_drive_input * drive < 0
             c.command_speed(target, now, force=edge or reversal)
@@ -1566,9 +1589,11 @@ class Game:
             c.snap_lane(-1, now)
         if src.pressed(I.LANE_RIGHT):
             c.snap_lane(+1, now)
-        if src.pressed(I.UTURN):
+        if (correcting_wrong_way and c.speed_sent() > 0
+                and now - c.last_uturn_t >= WRONG_WAY_UTURN_S):
             c.u_turn()
-            src.rumble(0.3, 0.6, 120)
+            c.last_uturn_t = now
+            self.log(f"{c.name} turns around (wrong way)", c.color)
         if src.pressed(I.FIRE):
             self.fire(c, now)
         if src.pressed(I.MINE):
@@ -1817,8 +1842,9 @@ class Game:
                 continue
             if not c.car.connected or c.charging:
                 continue
-            if self.wrong_way(c):
+            if self.wrong_way(c) and not c.manual_reverse:
                 c.u_turn()
+                c.last_uturn_t = now
             if not c.localized() or now - c.loc.last_update >= 1.5 or c.ai_track_recovery:
                 c.ai_track_recovery = "searching"
                 c.ai_track_recovery_t = now
