@@ -52,7 +52,7 @@ class PlayerSpeedTests(unittest.TestCase):
     def test_release_force_sends_the_exact_held_target_once(self):
         self.car.command_speed(600, self.now, force=True)
         self.car.ble.fire.reset_mock()
-        self.car.command_speed(690, self.now + .2)
+        self.car.command_speed(690, self.now + .15)
         self.car.ble.fire.reset_mock()
         self.car.command_speed(690, self.now + .21, force=True)
         self.car.ble.fire.assert_called_once()
