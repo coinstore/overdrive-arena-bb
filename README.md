@@ -51,7 +51,9 @@ cars directly, with the protocol verified on real hardware (firmware 11866) and 
   geometrically closed loop replaces `track.json`.
 - **Live map**: a circuit-constrained Kalman position estimate combines measured speed, lane radius and BLE
   position fixes. The display mirrors the engine exactly; the engine dead-reckons from the latest
-  code/bar for weapons and AI and extrapolates for up to three seconds without a fix.
+  code/bar for weapons and AI and extrapolates for up to three seconds without a fix. Track codes are
+  treated as zones, not exact points: a prediction inside the code's zone is kept, only a prediction
+  outside it is corrected to the nearest zone edge. Transition bars remain exact anchors.
 - **Map records**: best lap and fastest completed race saved in `records.json` and shown on the main
   screen in ranked car and controller tables. Personal records are saved even when they do not beat the
   overall map record. Human and AI records, modes, and race lengths are kept separate; car/controller
@@ -128,8 +130,9 @@ without a fix; silence holds lap progress instead of erasing it or inventing mor
 off-track reports and recovery reset the partial lap. The HUD shows current-lap progress and reset reasons.
 A complete forward circuit is required for a timed lap.
 
-The engine prediction horizon can be tuned with `ARENA_ENGINE_HORIZON` (seconds, default 3). The map has
-no separate smoothing or render lead: it shows the engine state directly.
+The engine prediction horizon can be tuned with `ARENA_ENGINE_HORIZON` (seconds, default 3); the code-zone
+phase (default 0.05) with `ARENA_CODE_SLOT_BIAS`. The map has no separate smoothing or render lead: it
+shows the engine state directly.
 
 | Action              | Xbox            | PS5           | Keyboard          |
 |---------------------|-----------------|---------------|-------------------|

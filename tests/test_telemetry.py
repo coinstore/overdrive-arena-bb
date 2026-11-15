@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from anki import protocol as P
-from anki.track import CarLocalizer, Track, TrackScanner, Piece, START, STRAIGHT, TURN
+from anki.track import CarLocalizer, Track, TrackScanner, Piece, START, STRAIGHT, TURN, locate
 from game.game import CarState
 
 
@@ -20,7 +20,7 @@ class TelemetryTests(unittest.TestCase):
     def test_missed_transition_between_identical_curves(self):
         self.loc.on_message(P.MSG_LOCALIZATION_POSITION_UPDATE, self.pos)
         self.assertEqual(self.loc.index, 1)
-        self.assertAlmostEqual(self.loc.frac, 1 / 6)
+        self.assertAlmostEqual(self.loc._sensor_pose[1], 1 - locate(17, 11, True)[1])
 
     def test_reverse_missed_transition(self):
         self.loc.index, self.loc.frac, self.loc.direction = 1, 0.1, -1
@@ -29,7 +29,7 @@ class TelemetryTests(unittest.TestCase):
         self.loc.on_message(P.MSG_LOCALIZATION_POSITION_UPDATE, self.pos)
         self.assertEqual(self.loc.index, 0)
         self.assertEqual(self.loc.direction, -1)
-        self.assertAlmostEqual(self.loc.frac, 5 / 6)
+        self.assertAlmostEqual(self.loc._sensor_pose[1], 1 - locate(17, 0, False)[1])
 
     def test_received_transition_is_not_counted_twice(self):
         self.loc.index, self.loc.frac = 1, 0.03
@@ -65,10 +65,11 @@ class TelemetryTests(unittest.TestCase):
         loc = CarLocalizer(copy)
         loc.on_message(P.MSG_LOCALIZATION_POSITION_UPDATE,
                        P.PositionUpdate(20, 34, 0, 400, 0), received_at=100)
-        self.assertAlmostEqual(loc.frac, .3)
+        self.assertAlmostEqual(loc._sensor_pose[1], .6 * locate(34, 20, False)[1])
         loc.on_message(P.MSG_LOCALIZATION_POSITION_UPDATE,
-                       P.PositionUpdate(10, 33, 0, 400, 0), received_at=101)
-        self.assertAlmostEqual(loc.frac, .9)
+                       P.PositionUpdate(10, 33, 0, 400, 0), received_at=100.84)
+        self.assertEqual(loc._sensor_pose[0], 0)
+        self.assertAlmostEqual(loc._sensor_pose[1], .6 + .4 * locate(33, 10, False)[1])
 
     def test_scanner_learns_start_bar_from_wheel_distances(self):
         scanner = TrackScanner()

@@ -38,6 +38,7 @@ def _jsonable(value):
 async def _record_one(device, model: str, args, out):
     car = Vehicle(device, model)
     start = time.monotonic()
+    lane_task = None
     counts: dict[int, int] = {}
     received: list[tuple[float, int]] = []
     status = None
@@ -63,6 +64,13 @@ async def _record_one(device, model: str, args, out):
         out.write(json.dumps({"t": time.monotonic() - start, "kind": kind, "car": car.address,
                               **fields}) + "\n")
 
+    async def drive_lanes() -> None:
+        await asyncio.sleep(2.0)
+        for lane in (68.0, 23.0, -23.0, -68.0, 0.0):
+            await car.change_lane(lane, 300, 1000)
+            event("lane", value=lane)
+            await asyncio.sleep(2.5)
+
     try:
         event("connect")
         await car.connect()
@@ -77,6 +85,8 @@ async def _record_one(device, model: str, args, out):
             event("abort", reason="car is not on the track or is on the charger")
             log.error("%s is not ready (status=%s)", car.model, status)
             return 1
+        if args.lane_cycle:
+            lane_task = asyncio.create_task(drive_lanes())
         if args.ramp_seconds:
             t0 = time.monotonic()
             while True:
@@ -108,6 +118,8 @@ async def _record_one(device, model: str, args, out):
         log.exception("%s failed", car.model)
         return 1
     finally:
+        if lane_task is not None:
+            lane_task.cancel()
         try:
             if car.connected:
                 await car.stop()
@@ -172,6 +184,7 @@ if __name__ == "__main__":
     ap.add_argument("--ramp-to", type=int, default=1200, help="ramp end speed")
     ap.add_argument("--ramp-seconds", type=float, default=0, help="linear speed ramp duration; 0 disables")
     ap.add_argument("--write-hz", type=float, default=20, help="speed writes per second during --ramp-seconds")
+    ap.add_argument("--lane-cycle", action="store_true", help="cycle through lanes while driving")
     ap.add_argument("--scan", type=float, default=5.0, help="BLE scan duration")
     ap.add_argument("--output", help="JSONL output path")
     a = ap.parse_args()

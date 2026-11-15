@@ -31,6 +31,7 @@ DATA_FILE = Path(__file__).parent / "data" / "offsetInfo.json"
 # in smoothly. A small lead compensates BLE notification latency; both can be
 # tuned on real hardware via the environment.
 ENGINE_HORIZON_S = float(os.environ.get("ARENA_ENGINE_HORIZON", "3.0"))
+CODE_SLOT_BIAS = float(os.environ.get("ARENA_CODE_SLOT_BIAS", "0.05"))
 LANE_FEEDBACK_ENABLED = os.environ.get("ARENA_LANE_FEEDBACK", "1") != "0"
 
 CELL_MM = 560.0                       # one straight piece
@@ -79,18 +80,20 @@ def piece_type(piece_id: int) -> str:
 
 
 def locate(piece_id: int, location: int, reverse_parsing: bool) -> Optional[tuple[float, float]]:
-    """(lane_mm in the car's frame, fraction along the piece in the *print* orientation) or None.
+    """(lane_mm in the car's frame, fraction along the piece in the print orientation)."""
+    slot = locate_slot(piece_id, location, reverse_parsing)
+    return None if slot is None else slot[:2]
 
-    The table's offsets are for a car reading the codes forward; when the car reads them reversed
-    its left/right swap. Empirically the table sign is opposite to the car's convention, hence the minus.
-    """
+
+def locate_slot(piece_id: int, location: int, reverse_parsing: bool) -> Optional[tuple[float, float, float]]:
+    """(lane_mm, print fraction, half slot width as a fraction of the piece)."""
     _load_table()
     slot = _TABLE.get(piece_id, {}).get("slots", {}).get(location)
     if slot is None:
         return None
     lane = slot.offset_mm if reverse_parsing else -slot.offset_mm
-    frac_print = (slot.index + 0.5) / slot.count
-    return lane, frac_print
+    frac_print = (slot.index + CODE_SLOT_BIAS) / slot.count
+    return lane, frac_print, 0.5 / slot.count
 
 
 # ---------------------------------------------------------------- track model
@@ -477,6 +480,7 @@ class CarLocalizer:
         self.filter = PositionFilter(track)
         self._sensor_pose = None
         self._code_pose = None
+        self._code_half_mm = 0.0
         self._prediction_t = 0.0
         self._display_distance = None
         self._display_time = None
@@ -533,8 +537,9 @@ class CarLocalizer:
             # The engine is re-anchored at this measurement and then predicted
             # to the current frame.
             engine_now = max(now, self._prediction_t)
+            half = self._code_half_mm if msg_id == P.MSG_LOCALIZATION_POSITION_UPDATE else 0.0
             self._set_engine_anchor(self.index, self.frac, fix_time,
-                                    self.direction * self.speed)
+                                    self.direction * self.speed, half)
             self.last_update = now
             self._prediction_t = engine_now
             self._publish_progress(now)
@@ -614,14 +619,18 @@ class CarLocalizer:
         # direction relative to the scan: same reverse flag -> same direction
         self.direction = 1 if pos.reverse_parsing == piece.reversed else -1
         lane_car, frac_print = located
+        slot = locate_slot(pos.piece, pos.location, pos.reverse_parsing)
+        half_frac = slot[2] if slot is not None else 0.0
         # fraction in the track-forward frame: the scanning car read the codes with piece.reversed
         frac = 1.0 - frac_print if piece.reversed else frac_print
         if piece.kind == START:
             self.sub_id = pos.piece
             bar = self.track.start_bar_frac
             frac = bar * frac if pos.piece == START_ID else bar + (1.0 - bar) * frac
+            half_frac *= bar if pos.piece == START_ID else 1.0 - bar
         else:
             self.sub_id = None
+        self._code_half_mm = piece.length_mm * half_frac
         self.frac = frac
         self.code_lane_mm = lane_car if self.direction > 0 else -lane_car
         self.lane_mm = self.code_lane_mm
@@ -683,27 +692,7 @@ class CarLocalizer:
         self.last_update = now
 
     # ---- main-thread helpers ----
-    def _unwrap_engine(self, distance: float) -> float:
-        if self.engine_distance is None:
-            return distance
-        length = self.filter.length
-        return distance + round((self.engine_distance - distance) / length) * length
-
-    def _set_engine_anchor(self, index: int, frac: float, now: float, speed: float) -> None:
-        anchor = self._unwrap_engine(self.filter.distance(index, frac))
-        self._engine_anchor = anchor
-        self._engine_anchor_t = now
-        self._engine_speed = speed
-        self.engine_distance = anchor
-        self.index, self.frac = index, frac
-
     def hold_at_start_bar(self, now: float) -> None:
-        """Hold filter and engine on the start bar without claiming a bar code.
-
-        Used while the grid waits for the bar transition or the settle
-        timeout.  ``freeze_at_start_bar`` additionally records the FINISH
-        sub-piece as confirmed.
-        """
         bar = self.track.start_bar_frac
         self.index, self.frac = 0, bar
         self.on_track = True
@@ -716,11 +705,34 @@ class CarLocalizer:
         self.last_update = now
 
     def freeze_at_start_bar(self, now: float) -> None:
-        """Place both filter and engine exactly on the start bar and confirm it."""
         self.hold_at_start_bar(now)
         bar = self.track.start_bar_frac
         self.sub_id = FINISH_ID
         self._sensor_pose = self._code_pose = (0, bar, FINISH_ID)
+
+    def _unwrap_engine(self, distance: float) -> float:
+        if self.engine_distance is None:
+            return distance
+        length = self.filter.length
+        return distance + round((self.engine_distance - distance) / length) * length
+
+    def _set_engine_anchor(self, index: int, frac: float, now: float, speed: float,
+                           half_mm: float = 0.0) -> None:
+        center = self._unwrap_engine(self.filter.distance(index, frac))
+        predicted = self.engine_at(now)
+        if predicted is None or half_mm <= 0.0:
+            anchor = center
+        else:
+            # A track code identifies a zone, not a point. Keep the
+            # dead-reckoned position when it already lies inside the zone;
+            # otherwise correct only to the nearest zone edge.
+            low, high = center - half_mm, center + half_mm
+            anchor = min(high, max(low, predicted))
+        self._engine_anchor = anchor
+        self._engine_anchor_t = now
+        self._engine_speed = speed
+        self.engine_distance = anchor
+        self.index, self.frac = self.filter.pose(anchor)
 
     def rebase_engine_speed(self, speed: float, now: float) -> None:
         """Keep the engine prediction continuous when a speed update arrives."""

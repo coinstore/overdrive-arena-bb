@@ -380,7 +380,8 @@ class PredictionTests(unittest.TestCase):
         loc.on_message(P.MSG_LOCALIZATION_POSITION_UPDATE,
                        P.PositionUpdate(21, 17, 0, 800, 0), received_at=100.3)
         self.assertEqual(loc.index, 2)
-        self.assertAlmostEqual(loc.frac, .625)
+        self.assertEqual(loc._sensor_pose[0], 2)
+        self.assertAlmostEqual(loc._sensor_pose[1], locate(17, 21, False)[1])
 
     def test_queued_crossings_and_rendered_position_share_route_after_frame_stall(self):
         route = self.car.loc.filter
