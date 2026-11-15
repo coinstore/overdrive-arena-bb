@@ -166,6 +166,21 @@ class PredictionTests(unittest.TestCase):
         victim._send.assert_any_call(P.lights_pattern([(P.LC_TAIL, P.EFFECT_FLASH, 0, 5, 20)]))
         victim._send.assert_any_call(P.engine_flash(*victim.engine_rgb, cycles=10))
 
+    def test_hit_rumble_is_shorter_and_weaker_than_death_rumble(self):
+        victim = CarState(SimpleNamespace(model='Victim', battery_mv=0, connected=True, on_charger=False),
+                          1, Mock(), 800)
+        victim.source = Mock()
+        victim._send = Mock()
+        victim.hp = 60
+        self.game.mode = 'battle'
+        self.game.damage(victim, self.car, 20, self.now, slow=True)
+        victim.source.rumble.assert_called_once_with(0.9, 0.4, 250)
+
+        victim.source.reset_mock()
+        victim.hp = 20
+        self.game.damage(victim, self.car, 20, self.now, slow=True)
+        victim.source.rumble.assert_called_once_with(1.0, 0.8, 900)
+
     def test_idle_never_turns_on_the_tail_flasher(self):
         self.car._send = Mock()
         self.car.lights_idle()

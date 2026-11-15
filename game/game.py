@@ -84,6 +84,9 @@ MINE_TRIGGER_MM = 120.0
 MINE_LANE_MM = 35.0
 MINE_ARM_S = 1.0
 DEATH_STOP_S = 3.0
+# Controller feedback: a destroyed car gives a clearly stronger, longer pulse than a normal hit.
+HIT_RUMBLE = (0.9, 0.4, 250)
+DEATH_RUMBLE = (1.0, 0.8, 900)
 # Light feedback timings and battle health bands.
 LIGHT_FIRE_S = 0.35
 LIGHT_HIT_S = 0.5
@@ -2051,9 +2054,10 @@ class Game:
             victim.penalty_until = now + BLASTER_SLOW_S
         if stun:
             victim.stun_until = now + MINE_STUN_S
+        fatal = victim.hp <= 0
         if victim.source:
-            victim.source.rumble(0.9, 0.4, 250)
-        if victim.hp <= 0:
+            victim.source.rumble(*(DEATH_RUMBLE if fatal else HIT_RUMBLE))
+        if fatal:
             victim.dead_until = now + DEATH_STOP_S
             victim.deaths += 1
             attacker.kills += 1

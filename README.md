@@ -186,8 +186,9 @@ traffic. A player already using the full 2000 command range needs no boost.
 - **Mine** (4 s cooldown, 2 active): dropped in your lane, arms after 1 s, lives 45 s. A car passing within
   12 cm in that lane takes 35 damage and is stopped for 1.2 s.
 - 100 HP. At 0 the car is destroyed: stopped 3 s with all lights off, then respawns. Kills are counted.
-- Hits flash the victim's tail lights red and rumble its controller. The shooter's front lights alternate
-  red/green while firing. A destroyed car stays dark until it respawns.
+- Hits flash the victim's tail lights red and rumble its controller; a destroyed car gives a clearly stronger,
+  longer vibration. The shooter's front lights alternate red/green while firing. A destroyed car stays dark
+  until it respawns.
 
 ### Car light language
 
