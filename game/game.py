@@ -87,6 +87,7 @@ GRID_APPROACH_FRAC = 0.0    # crawl from the start of the last piece, so deceler
 GRID_CRAWL = 300            # 250 mm/s loses track codes on some pieces
 GRID_RECOVERY_DRIVE_S = 1.5  # bounded slow search, followed by a pause before retrying
 GRID_RECOVERY_PAUSE_S = 2.0
+START_SPEED = 400           # launch target at GO; capped by the race and personal limits
 
 COUNTDOWN_S = 3.0
 BOOST_DURATION_S = 0.6
@@ -949,6 +950,13 @@ class Game:
             elif not c.grid_state:
                 c.ai = self.ai_enabled and c.source is None and c.ai_pref
             c.ai_next_lane_t = now + (0.35 if c.ai_difficulty == "extreme" else random.uniform(3, 6))
+            if c.participates() and c.grid_state == "placed" and c.car.connected and not c.charging:
+                # The race starts in motion: players keep this as their held
+                # speed, while AI immediately takes over its own target.
+                launch = min(START_SPEED, c.max_speed)
+                if c.source is not None:
+                    c.cruise_speed = float(launch)
+                c.command_speed(launch, now, force=True)
             c.lights_idle()
         self.log("race started")
 

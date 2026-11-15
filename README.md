@@ -24,8 +24,10 @@ cars directly, with the protocol verified on real hardware (firmware 11866) and 
 - **Starting grid**: every participating car keeps retrying until it stops on the start-line bar. The car
   brakes itself on the bar via a firmware command, so the stop does not depend on Bluetooth latency.
   Lost position triggers slow recovery bursts with pauses; missed starts, charging and link loss do not
-  exclude a car. Cars line up in separate lanes, then launch together on 3-2-1-GO. To leave a car out, return to
-  pairing with Back / Esc and set it to parked.
+  exclude a car. Cars line up in separate lanes, then wait on the line until Start / Options / Space is
+  pressed again. The 3-2-1-GO countdown then launches every car at a 400 mm/s start speed (capped by the
+  race and personal limits), so players do not need to accelerate from a standstill. To leave a car out,
+  return to pairing with Back / Esc and set it to parked.
 - **Race speed**: click MAX or press right-stick / R in setup to cycle the shared ceiling from 200 to
   2000 mm/s. It caps players, AI and boosts; individual lower limits still apply. At race finish only
   the winning car remains illuminated until returning to setup.
@@ -109,6 +111,9 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
    before trying again, and a car may settle in another free lane instead of repeating a lane change.
    Missing position triggers repeated 1.5-second recovery bursts with 2-second pauses. Charging or disconnected cars
    remain pending. The countdown waits until every participant is ready; only parked cars are excluded.
+   Once the field is on the line, press **Start / Options / Space** again to begin the 3-2-1-GO countdown.
+   At GO every participant receives a 400 mm/s launch target, so cars move immediately; throttle still
+   raises the player's held speed afterwards.
 4. **Race**. **Back** (Esc) stops everything and returns to pairing. **F11** toggles fullscreen.
    After a finish, **Start / Options** starts another grid and countdown with the same selections.
    Replace an off-track car, then press **right-stick / R3 / R**, or click **RECOVER**. The controller
@@ -284,7 +289,7 @@ that car is the one most likely to reboot under hard acceleration. `LOW` below 3
 ## Repository layout
 
 ```
-app.py              state machine: connect -> pairing -> scan -> grid -> countdown -> race
+app.py              state machine: connect -> pairing -> scan -> grid -> ready -> countdown -> race
 anki/protocol.py    message encoders / decoders (verified byte layouts)
 anki/vehicle.py     one car over BLE: discover, connect, reconnect, notifications
 anki/ble_worker.py  BLE on its own thread (pygame's COM apartment breaks bleak on the main thread)

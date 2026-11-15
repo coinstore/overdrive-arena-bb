@@ -9,10 +9,10 @@ from unittest.mock import Mock, patch
 from anki import protocol as P
 from anki.position_filter import PositionFilter
 from anki.track import CarLocalizer, Piece, Track, START, STRAIGHT, TURN, FNF, locate
-from game.game import CarState, Game
+from game.game import CarState, Game, START_SPEED
 from game.records import Records
 from game import inputs as I
-from app import App, PAIRING, RACE, GRID
+from app import App, PAIRING, RACE, GRID, READY, COUNTDOWN
 
 
 def circuit():
@@ -40,6 +40,39 @@ class PredictionTests(unittest.TestCase):
         self.assertEqual(self.car.player_max_speed, 2000)
         self.game.set_race_speed_limit(2000)
         self.assertEqual(self.car.max_speed, 2000)
+
+    def test_start_gives_players_and_ai_a_launch_speed(self):
+        self.car.grid_state = 'placed'
+        self.car.source = Mock()
+        self.car.lights_idle = Mock()
+        self.car.command_speed = Mock()
+        with patch('game.game.time.monotonic', return_value=self.now):
+            self.game.start()
+        self.assertEqual(self.car.cruise_speed, START_SPEED)
+        self.car.command_speed.assert_called_with(START_SPEED, self.now, force=True)
+
+        # AI has no held cruise target, but receives the same launch command.
+        ai = CarState(SimpleNamespace(model='AI', battery_mv=0, connected=True, on_charger=False),
+                      1, Mock(), 800)
+        ai.ai = True
+        ai.grid_state = 'placed'
+        ai.lights_idle = Mock()
+        ai.command_speed = Mock()
+        self.game.cars.append(ai)
+        with patch('game.game.time.monotonic', return_value=self.now):
+            self.game.start()
+        ai.command_speed.assert_called_with(START_SPEED, self.now, force=True)
+
+    def test_launch_speed_respects_race_limit(self):
+        self.car.grid_state = 'placed'
+        self.car.source = Mock()
+        self.car.lights_idle = Mock()
+        self.car.command_speed = Mock()
+        self.game.set_race_speed_limit(300)
+        with patch('game.game.time.monotonic', return_value=self.now):
+            self.game.start()
+        self.assertEqual(self.car.cruise_speed, 300)
+        self.car.command_speed.assert_called_with(300, self.now, force=True)
 
     def test_fair_penalties_follow_ranking_and_clear_outside_race(self):
         cars = [self.car] + [CarState(SimpleNamespace(model=str(i), battery_mv=0, connected=True,
@@ -627,6 +660,22 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.app.state, GRID)
         self.assertIs(self.app.cars[0].source, self.pad)
         self.app.game.begin_grid.assert_called_once()
+
+    def test_grid_waits_for_a_second_start_press(self):
+        self.app.state = GRID
+        self.app.args = SimpleNamespace(autostart=False)
+        self.pad.pressed.side_effect = lambda action: False
+        self.app.game.grid_tick = Mock(return_value=True)
+        self.app.game.grid_summary = Mock(return_value=(1, 1))
+        self.app.game.begin_countdown = Mock()
+        self.app.grid_tick(.02)
+        self.assertEqual(self.app.state, READY)
+        self.app.game.begin_countdown.assert_not_called()
+
+        self.press(I.READY)
+        self.app.ready_tick(.02)
+        self.assertEqual(self.app.state, COUNTDOWN)
+        self.app.game.begin_countdown.assert_called_once()
 
     def test_scores_controller_shortcut_and_back(self):
         self.app.game.stop_all = Mock()

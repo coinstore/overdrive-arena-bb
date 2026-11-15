@@ -48,7 +48,7 @@ SCAN_SPEEDS = (450, 500, 400)
 SCAN_TIMEOUT_S = 90
 SCAN_NO_DATA_S = 8.0
 
-PAIRING, SCANNING, GRID, COUNTDOWN, RACE = "pairing", "scanning", "grid", "countdown", "race"
+PAIRING, SCANNING, GRID, READY, COUNTDOWN, RACE = "pairing", "scanning", "grid", "ready", "countdown", "race"
 SCORES = "scores"
 
 CONTROLS_PAIRING = ("pad:  Left/Right car   A claim   B release   X AI   Y scan   L-stick mode   Up/Down laps   Start/Options RACE   Back quit\n"
@@ -327,6 +327,22 @@ class App:
                 self.state = PAIRING
                 self.status = "no car reached the start line - are they on the track?"
                 return
+            # Hold the field on the line until the start button is pressed
+            # again; only then begin the 3-2-1 countdown.
+            self.state = READY
+            self.status = "press Start to race"
+
+    def ready_tick(self, dt: float) -> None:
+        g = self.game
+        assert g is not None
+        if any(s.pressed(I.BACK) for s in self.sources):
+            g.stop_all()
+            self.state = PAIRING
+            self.status = "start cancelled (cars stopped)"
+            return
+        g.tick(dt)   # keep localizers advancing while the field waits
+        auto = bool(getattr(getattr(self, "args", None), "autostart", False))
+        if auto or any(s.pressed(I.READY) for s in self.sources):
             g.begin_countdown()
             self.state = COUNTDOWN
 
@@ -528,6 +544,8 @@ class App:
                     self.scores_tick()
                 elif self.state == GRID:
                     self.grid_tick(dt)
+                elif self.state == READY:
+                    self.ready_tick(dt)
                 elif self.state == COUNTDOWN:
                     self.countdown_tick(dt)
                 elif self.state == RACE:
@@ -603,6 +621,9 @@ class App:
             placed, total = g.grid_summary()
             self.renderer.draw_race(g, CONTROLS_RACE, overlay=f"TO THE START LINE  {placed}/{total}",
                                     sub="cars drive themselves to the grid  -  Back / Esc cancels")
+        elif self.state == READY:
+            self.renderer.draw_race(g, CONTROLS_RACE, overlay="PRESS START",
+                                    sub="Start / Options / Space  -  Back / Esc cancels")
         elif self.state == COUNTDOWN:
             left = g.countdown_left()
             self.renderer.draw_race(g, CONTROLS_RACE, overlay=f"{int(left) + 1}" if left > 0 else "GO!", sub="get ready")
