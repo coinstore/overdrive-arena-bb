@@ -66,7 +66,11 @@ ACCEL_DOWN = 900
 ACCEL_STOP = 2500
 
 MAX_HP = 100
-BLASTER_RANGE_MM = 1400.0
+# A blaster shot runs straight from the car's nose until it leaves the track.
+# Targets count as hit when their centre is within half a car body of that line.
+BLASTER_HIT_HALF_WIDTH_MM = 25.0
+# Outer lane plus a car body and a little slack; keeps the beam on the track.
+BLASTER_TRACK_CORRIDOR_MM = MAX_ABS_OFFSET + BLASTER_HIT_HALF_WIDTH_MM + 2.0
 BLASTER_COOLDOWN_S = 1.0
 BLASTER_DAMAGE = 20
 BLASTER_SLOW_FACTOR = 0.45
@@ -1935,29 +1939,55 @@ class Game:
             self.drop_mine(c, now)
 
     # ---- weapons ----
-    def target_ahead(self, shooter: CarState) -> Optional[tuple[CarState, float]]:
-        if not shooter.localized():
+    def _shot_line(self, shooter: CarState) -> Optional[tuple[tuple[float, float], float, float, float, tuple[float, float]]]:
+        """Origin, direction, usable length and end point of a straight shot."""
+        if self.track is None or not shooter.localized():
             return None
+        p0 = shooter.world()
+        if p0 is None:
+            return None
+        a = shooter.loc.heading()  # type: ignore[union-attr]
+        length, x1, y1 = self.track.beam_end(p0[0], p0[1], a, BLASTER_TRACK_CORRIDOR_MM)
+        return p0, math.cos(a), math.sin(a), length, (x1, y1)
+
+    def _target_on_line(self, shooter: CarState, p0: tuple[float, float], fx: float, fy: float,
+                        length: float) -> Optional[tuple[CarState, float]]:
         best = None
         for o in self.cars:
             if o is shooter or not o.localized() or o.hp <= 0:
                 continue
-            d = shooter.loc.distance_ahead_mm(o.loc)  # type: ignore[union-attr]
-            if d is None or d <= 0 or d > BLASTER_RANGE_MM:
+            p1 = o.world()
+            if p1 is None:
                 continue
-            if best is None or d < best[1]:
-                best = (o, d)
+            dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+            ahead = dx * fx + dy * fy
+            if ahead <= 0 or ahead > length:
+                continue
+            lateral = -dx * fy + dy * fx
+            if abs(lateral) > BLASTER_HIT_HALF_WIDTH_MM:
+                continue
+            if best is None or ahead < best[1]:
+                best = (o, ahead)
         return best
+
+    def target_ahead(self, shooter: CarState) -> Optional[tuple[CarState, float]]:
+        """Nearest car on the straight shot line from the car's nose."""
+        shot = self._shot_line(shooter)
+        if shot is None:
+            return None
+        p0, fx, fy, length, _end = shot
+        return self._target_on_line(shooter, p0, fx, fy, length)
 
     def fire(self, shooter: CarState, now: float) -> None:
         if not self.weapons_enabled or now < shooter.fire_ready_at or shooter.is_dead(now) or not shooter.localized():
             return
         shooter.fire_ready_at = now + BLASTER_COOLDOWN_S
         shooter.lights_fire(now)
-        p0 = shooter.world()
-        if p0 is None:
+        shot = self._shot_line(shooter)
+        if shot is None:
             return
-        target = self.target_ahead(shooter)
+        p0, fx, fy, length, end = shot
+        target = self._target_on_line(shooter, p0, fx, fy, length)
         if target is not None:
             victim, _d = target
             p1 = victim.world() or p0
@@ -1966,9 +1996,7 @@ class Game:
             if shooter.source:
                 shooter.source.rumble(0.2, 0.7, 120)
         else:
-            a = shooter.loc.heading()  # type: ignore[union-attr]
-            p1 = (p0[0] + math.cos(a) * 500, p0[1] + math.sin(a) * 500)
-            self.lasers.append(Laser(p0[0], p0[1], p1[0], p1[1], shooter.color, now + 0.15, False))
+            self.lasers.append(Laser(p0[0], p0[1], end[0], end[1], shooter.color, now + 0.15, False))
 
     def drop_mine(self, owner: CarState, now: float) -> None:
         if not self.weapons_enabled or now < owner.mine_ready_at or owner.is_dead(now) or not owner.localized():

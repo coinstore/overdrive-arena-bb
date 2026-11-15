@@ -180,8 +180,9 @@ traffic. A player already using the full 2000 command range needs no boost.
 
 ### Battle weapons
 
-- **Blaster** (1 s cooldown): hits the nearest car ahead within 1.4 m along the track, any lane.
-  20 damage, victim slowed to 45 % for 1.5 s.
+- **Blaster** (1 s cooldown): fires straight from the car's nose in its current heading, as far as the
+  track surface continues. Only the nearest car whose body lies on that line is hit; other lanes and cars
+  around a corner are not. 20 damage, victim slowed to 45 % for 1.5 s.
 - **Mine** (4 s cooldown, 2 active): dropped in your lane, arms after 1 s, lives 45 s. A car passing within
   12 cm in that lane takes 35 damage and is stopped for 1.2 s.
 - 100 HP. At 0 the car is destroyed: stopped 3 s with all lights off, then respawns. Kills are counted.

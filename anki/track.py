@@ -126,6 +126,7 @@ class Track:
         self.pieces = pieces
         self.start_bar_frac = min(0.95, max(0.05, float(start_bar_frac)))
         self.closed = self._layout()
+        self._surface_cache: dict[float, list[tuple[float, float]]] = {}
 
     def __len__(self) -> int:
         return len(self.pieces)
@@ -185,6 +186,55 @@ class Track:
         h0 = HEADINGS[p.heading_in]
         base = math.atan2(h0[1], h0[0])
         return base + (math.pi / 2 if p.turn == "R" else -math.pi / 2) * frac
+
+    def _surface_samples(self, step_mm: float) -> list[tuple[float, float]]:
+        key = (step_mm, len(self.pieces))
+        samples = self._surface_cache.get(key)
+        if samples is None:
+            samples = []
+            for i, p in enumerate(self.pieces):
+                n = max(2, int(p.length_mm / step_mm))
+                samples.extend(self.world_point(i, k / n) for k in range(n + 1))
+            self._surface_cache[key] = samples
+        return samples
+
+    def beam_end(self, x: float, y: float, angle: float, corridor_mm: float = 95.0,
+                 step_mm: float = 20.0, max_mm: float = 20000.0) -> tuple[float, float, float]:
+        """Where a straight ray from (x, y) leaves the track surface.
+
+        The surface is the corridor within `corridor_mm` of a piece centerline.
+        The ray stops at the first sample outside it, so a shot can never cut
+        across the infield or continue around a curve. Returns
+        (length_mm, x_end, y_end).
+        """
+        if not self.pieces:
+            return 0.0, x, y
+        cell = max(1.0, corridor_mm)
+        buckets: dict[tuple[int, int], list[tuple[float, float]]] = {}
+        for sx, sy in self._surface_samples(step_mm):
+            buckets.setdefault((int(sx // cell), int(sy // cell)), []).append((sx, sy))
+        limit2 = corridor_mm * corridor_mm
+        dx, dy = math.cos(angle), math.sin(angle)
+        last = 0.0
+        for k in range(1, max(1, int(max_mm / step_mm)) + 1):
+            d = k * step_mm
+            px, py = x + dx * d, y + dy * d
+            bx, by = int(px // cell), int(py // cell)
+            near = False
+            for ox in (-1, 0, 1):
+                for oy in (-1, 0, 1):
+                    for sx, sy in buckets.get((bx + ox, by + oy), ()):
+                        if (px - sx) ** 2 + (py - sy) ** 2 <= limit2:
+                            near = True
+                            break
+                    if near:
+                        break
+                if near:
+                    break
+            if not near:
+                break
+            last = d
+        return last, x + dx * last, y + dy * last
 
     def piece_polyline(self, index: int, lane_mm: float = 0.0, steps: int = 12) -> list[tuple[float, float]]:
         p = self.pieces[index]
