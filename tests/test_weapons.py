@@ -6,7 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from anki.track import Piece, Track, START, STRAIGHT, TURN
-from game.game import (BLASTER_DAMAGE, BLASTER_TRACK_CORRIDOR_MM, CarState, Game, MAX_HP)
+from game.game import (BATTLE_LIVES, BLASTER_DAMAGE, BLASTER_TRACK_CORRIDOR_MM,
+                       CarState, DEATH_STOP_S, Game, MAX_HP)
 
 
 def make_car(index=0):
@@ -153,6 +154,83 @@ class WeaponAimTests(unittest.TestCase):
         self.assertFalse(laser.hit)
         self.assertAlmostEqual(math.dist((laser.x0, laser.y0), (laser.x1, laser.y1)), expected, places=3)
         self.assertLess(expected, 1000)
+
+
+class LoadoutTests(unittest.TestCase):
+    def game(self, track, count=2):
+        cars = [make_car(i) for i in range(count)]
+        game = Game(Mock(), cars, track, True, 800)
+        game.mode = "battle"
+        game.running = True
+        game._battle_contenders = count
+        for i, car in enumerate(cars):
+            car.source = SimpleNamespace(short=f"P{i + 1}", rumble=Mock())
+        return game, cars
+
+    def test_weapon_choice_uses_mine_instead_of_blaster(self):
+        game, (shooter, target) = self.game(straight_track())
+        place(shooter, 0, 0.1, lane=23)
+        place(target, 0, 0.5, lane=23)
+        shooter.loadout.weapon = "mine"
+        now = time.monotonic()
+
+        game.use_weapon(shooter, now)
+
+        self.assertEqual(len(game.mines), 1)
+        self.assertEqual(target.hp, MAX_HP)
+        self.assertEqual(game.lasers, [])
+
+    def test_weapon_choice_uses_blaster_when_equipped(self):
+        game, (shooter, target) = self.game(straight_track())
+        place(shooter, 0, 0.1, lane=23)
+        place(target, 0, 0.5, lane=23)
+        shooter.loadout.weapon = "blaster"
+        now = time.monotonic()
+
+        game.use_weapon(shooter, now)
+
+        self.assertEqual(game.mines, [])
+        self.assertEqual(target.hp, MAX_HP - BLASTER_DAMAGE)
+
+    def test_destruction_costs_a_life_and_keeps_the_car_in_the_battle(self):
+        game, (attacker, victim) = self.game(straight_track())
+        place(attacker, 0, 0.1, lane=23)
+        place(victim, 0, 0.5, lane=23)
+        now = time.monotonic()
+
+        game.damage(victim, attacker, MAX_HP, now)
+
+        self.assertEqual(victim.lives, BATTLE_LIVES - 1)
+        self.assertFalse(victim.eliminated)
+        self.assertAlmostEqual(victim.dead_until, now + DEATH_STOP_S)
+        self.assertIsNone(game.winner)
+        self.assertEqual(attacker.kills, 1)
+
+    def test_battle_ranking_keeps_active_cars_ahead_of_parked_cars(self):
+        game, (active, parked) = self.game(straight_track())
+        active.lives = 4
+        active.kills = 1
+        parked.source = None
+        parked.ai = False
+        parked.lives = BATTLE_LIVES
+        parked.kills = 0
+
+        self.assertIs(game.ranking()[0], active)
+
+    def test_last_car_with_lives_wins_after_the_final_destruction(self):
+        game, (attacker, victim) = self.game(straight_track())
+        place(attacker, 0, 0.1, lane=23)
+        place(victim, 0, 0.5, lane=23)
+        victim.lives = 1
+        now = time.monotonic()
+
+        game.damage(victim, attacker, MAX_HP, now)
+
+        self.assertEqual(victim.lives, 0)
+        self.assertTrue(victim.eliminated)
+        self.assertTrue(victim.is_dead(now + 10))
+        self.assertIs(game.winner, attacker)
+        self.assertTrue(game.finished)
 
 
 if __name__ == '__main__':

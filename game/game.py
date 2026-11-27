@@ -19,7 +19,6 @@ from anki.vehicle import Vehicle
 from . import inputs as I
 from .battery import BatteryMonitor
 from .colors import ENGINE_COLORS, PLAYER_COLORS, paint_for_model
-from .records import Records
 
 log = logging.getLogger("game")
 
@@ -66,6 +65,9 @@ ACCEL_DOWN = 900
 ACCEL_STOP = 2500
 
 MAX_HP = 100
+BATTLE_LIVES = 5
+WEAPONS = ("blaster", "mine")
+POWERUPS = ("uturn",)
 # A blaster shot runs straight from the car's nose until it leaves the track.
 # Targets count as hit when their centre is within half a car body of that line.
 BLASTER_HIT_HALF_WIDTH_MM = 25.0
@@ -141,6 +143,19 @@ class Effect:
 
 
 @dataclass
+class Loadout:
+    """The one weapon and one powerup a player takes into a battle."""
+    weapon: str = "blaster"
+    powerup: str = "uturn"
+
+    def weapon_name(self) -> str:
+        return {"blaster": "BLASTER", "mine": "MINE"}.get(self.weapon, self.weapon.upper())
+
+    def powerup_name(self) -> str:
+        return {"uturn": "U-TURN"}.get(self.powerup, self.powerup.upper())
+
+
+@dataclass
 class Mine:
     owner: "CarState"
     progress: float
@@ -167,7 +182,7 @@ class CarState:
         self.fair_penalty = 0
         self.source: Optional[I.InputSource] = None
         self.ai = False
-        self.ai_pref = True                 # pairing screen: unclaimed car -> AI (True) or parked (False)
+        self.ai_pref = True                 # lobby: unclaimed car -> AI (True) or parked (False)
         self.ai_difficulty = "normal"
         self.loc: Optional[CarLocalizer] = None
         self.extra_listener = None          # e.g. the track scanner while scanning
@@ -218,6 +233,9 @@ class CarState:
         self.hp = MAX_HP
         self.kills = 0
         self.deaths = 0
+        self.lives = BATTLE_LIVES
+        self.eliminated = False
+        self.loadout = Loadout()
         self.target_offset = 0.0
         self.dead_until = 0.0
         self.fire_ready_at = 0.0
@@ -303,7 +321,7 @@ class CarState:
         return "parked"
 
     def cycle_ai(self) -> None:
-        """Pairing selection: parked -> easy -> normal -> hard -> extreme -> parked."""
+        """Lobby selection: parked -> easy -> normal -> hard -> extreme -> parked."""
         if not self.ai_pref:
             self.ai_pref, self.ai_difficulty = True, "easy"
         elif self.ai_difficulty == "extreme":
@@ -448,7 +466,7 @@ class CarState:
 
     # ---- status ----
     def is_dead(self, now: float) -> bool:
-        return now < self.dead_until
+        return self.eliminated or now < self.dead_until
 
     def speed_sent(self) -> int:
         return self._last_speed_sent
@@ -748,15 +766,11 @@ class Game:
         self.race_speed_limit = 2000
         self.finish_t = 0.0
         self.running = False
-        self.records = Records()
+        self._battle_contenders = 0
         for c in cars:
             c.set_track(track)
 
     # ---- lifecycle ----
-    @property
-    def records_mode(self) -> str:
-        return "race_fair" if self.mode == "race" and self.fair_game else self.mode
-
     def update_fair_penalties(self) -> None:
         for car in self.cars:
             car.fair_penalty = 0
@@ -799,6 +813,12 @@ class Game:
         participants = sum(1 for c in self.cars if c.participates() and self.track is not None)
         lane_order = grid_lane_order(participants)
         lane_i = 0
+        for c in self.cars:
+            c.hp = MAX_HP
+            c.lives = BATTLE_LIVES
+            c.eliminated = False
+            c.dead_until = 0.0
+            c.kills = c.deaths = 0
         for c in self.cars:
             c.lights_idle()
             if not c.participates() or self.track is None:
@@ -1125,6 +1145,9 @@ class Game:
         self.mines.clear()
         self.lasers.clear()
         self.fx.clear()
+        self._battle_contenders = sum(
+            1 for c in self.cars
+            if c.participates() and c.car.connected and not c.charging)
         for c in self.cars:
             if c.grid_state == "placed" and c.loc is not None:
                 # The countdown is longer than the AI freshness window; the
@@ -1134,6 +1157,11 @@ class Game:
                 c.start_bar_locked = False
             c.hp = MAX_HP
             c.kills = c.deaths = c.laps = 0
+            c.lives = BATTLE_LIVES
+            c.eliminated = False
+            c.fire_ready_at = c.mine_ready_at = 0.0
+            if c.ai:
+                c.loadout = Loadout(weapon=random.choice(WEAPONS), powerup=random.choice(POWERUPS))
             c.last_lap_s = c.best_lap_s = None
             c.race_finish_s = None
             c.lap_start_t = None
@@ -1223,7 +1251,8 @@ class Game:
         if self.mode == "race":
             return sorted(self.cars, key=lambda c: (-c.laps, c.race_finish_s if c.race_finish_s is not None else float("inf"),
                                                     -progress(c), c.index))
-        return sorted(self.cars, key=lambda c: (-c.kills, c.deaths, -c.laps, c.index))
+        return sorted(self.cars, key=lambda c: (not c.participates(), -c.lives, -c.kills,
+                                                c.deaths, -c.laps, c.index))
 
     def _track_laps(self, c: CarState, now: float) -> None:
         """Only credit a complete forward circuit between clean finish-line crossings."""
@@ -1368,7 +1397,6 @@ class Game:
     def _complete_lap(self, c: CarState, crossing_t: float, lap: float) -> None:
         c.laps += 1
         c.last_lap_s = lap
-        self.records.record(self.track, self.records_mode, c, "lap", lap)
         if c.best_lap_s is None or lap < c.best_lap_s:
             c.best_lap_s = lap
             self.log(f"{c.name} lap {c.laps}: {lap:.2f}s (best)", c.color)
@@ -1376,7 +1404,6 @@ class Game:
             self.log(f"{c.name} lap {c.laps}: {lap:.2f}s", c.color)
         if self.mode == "race" and c.laps >= self.lap_target and c.race_finish_s is None and self.race_start_t is not None:
             c.race_finish_s = crossing_t - self.race_start_t
-            self.records.record(self.track, self.records_mode, c, "race", c.race_finish_s, self.lap_target)
         if self.mode == "race" and c.laps >= self.lap_target and (self.winner is None or crossing_t < self.finish_t):
             self.winner = c
             self.finish_t = crossing_t
@@ -1671,9 +1698,7 @@ class Game:
             c.last_uturn_t = now
             self.log(f"{c.name} turns around (wrong way)", c.color)
         if src.pressed(I.FIRE):
-            self.fire(c, now)
-        if src.pressed(I.MINE):
-            self.drop_mine(c, now)
+            self.use_weapon(c, now)
 
     def ai_speed_ceiling(self, c: CarState) -> float:
         if c.ai_difficulty == "extreme" and c.extreme_max_speed is not None:
@@ -2005,12 +2030,20 @@ class Game:
         if not self.weapons_enabled:
             return
         reaction = AI_LEVELS[c.ai_difficulty][2]
-        if now > c.fire_ready_at and random.random() < dt * 0.6 * reaction and self.target_ahead(c) is not None:
+        if c.loadout.weapon == "mine":
+            if now > c.mine_ready_at and random.random() < dt * 0.06 * reaction:
+                self.drop_mine(c, now)
+        elif now > c.fire_ready_at and random.random() < dt * 0.6 * reaction and self.target_ahead(c) is not None:
             self.fire(c, now)
-        if now > c.mine_ready_at and random.random() < dt * 0.06 * reaction:
-            self.drop_mine(c, now)
 
     # ---- weapons ----
+    def use_weapon(self, shooter: CarState, now: float) -> None:
+        """Trigger the single equipped weapon (X)."""
+        if shooter.loadout.weapon == "mine":
+            self.drop_mine(shooter, now)
+        else:
+            self.fire(shooter, now)
+
     def _shot_line(self, shooter: CarState) -> Optional[tuple[tuple[float, float], float, float, float, tuple[float, float]]]:
         """Origin, direction, usable length and end point of a straight shot."""
         if self.track is None or not shooter.localized():
@@ -2111,6 +2144,23 @@ class Game:
             if m in self.mines:
                 self.mines.remove(m)
 
+    def _check_battle_end(self, now: float) -> None:
+        """The last car with lives remaining wins the battle."""
+        if self.mode != "battle" or self.finished or self._battle_contenders < 2:
+            return
+        active = [c for c in self.cars
+                  if c.participates() and not c.eliminated and c.lives > 0
+                  and c.car.connected and not c.charging]
+        if len(active) != 1:
+            return
+        winner = active[0]
+        self.winner = winner
+        self.finish_t = now
+        self.finish_celebration_t = 0.0
+        self._finish_lights_winner = None
+        self.effect("boom", winner.world(), winner.color, 1.5)
+        self.log(f"{winner.name} WINS the battle!", winner.color)
+
     def damage(self, victim: CarState, attacker: CarState, amount: int, now: float, mine: bool = False) -> None:
         if victim.is_dead(now) or victim.hp <= 0:
             return
@@ -2122,12 +2172,24 @@ class Game:
         if victim.source:
             victim.source.rumble(*(DEATH_RUMBLE if fatal else HIT_RUMBLE))
         if fatal:
-            victim.dead_until = now + DEATH_STOP_S
             victim.deaths += 1
             attacker.kills += 1
+            if self.mode == "battle":
+                victim.lives = max(0, victim.lives - 1)
+                if victim.lives <= 0:
+                    victim.eliminated = True
+                    victim.dead_until = float("inf")
+                    self.log(f"{attacker.name} eliminated {victim.name}!", attacker.color)
+                else:
+                    victim.dead_until = now + DEATH_STOP_S
+                    self.log(f"{attacker.name} destroyed {victim.name}! "
+                             f"{victim.lives} lives left", attacker.color)
+            else:
+                victim.dead_until = now + DEATH_STOP_S
+                self.log(f"{attacker.name} destroyed {victim.name}!", attacker.color)
             victim.lights_dead()
             self.effect("boom", w, victim.color, 1.2)
-            self.log(f"{attacker.name} destroyed {victim.name}!", attacker.color)
+            self._check_battle_end(now)
         else:
             victim.lights_hit(now, mine=mine)
             victim.update_health_light(self.weapons_enabled)

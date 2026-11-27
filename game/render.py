@@ -1,4 +1,4 @@
-"""pygame rendering: live track map with effects, HUD cards, pairing and scanning screens."""
+"""pygame rendering: live track map with effects, HUD cards, lobby, garage and scanning screens."""
 from __future__ import annotations
 
 import math
@@ -10,7 +10,8 @@ from typing import Optional
 import pygame
 
 from anki.track import START, TURN, Track
-from .game import MAX_HP, Game, CarState, BLASTER_COOLDOWN_S, MINE_COOLDOWN_S, MINE_ARM_S
+from .game import (MAX_HP, BATTLE_LIVES, POWERUPS, WEAPONS, Game, CarState, Loadout,
+                   MINE_ARM_S)
 
 BG = (14, 15, 19)
 BG_GRID = (22, 23, 29)
@@ -245,10 +246,11 @@ class MapView:
             lx, ly = x - label.get_width() // 2, y - 30
             pygame.draw.rect(screen, (0, 0, 0), (lx - 4, ly - 1, label.get_width() + 8, label.get_height() + 2), border_radius=4)
             screen.blit(label, (lx, ly))
-            bw = 40
-            pygame.draw.rect(screen, (30, 30, 36), (x - bw // 2, y + 16, bw, 5), border_radius=2)
-            pygame.draw.rect(screen, BAD, (x - bw // 2, y + 16, int(bw * v.hp_lag / MAX_HP), 5), border_radius=2)
-            pygame.draw.rect(screen, OK if c.hp > 40 else (255, 150, 90), (x - bw // 2, y + 16, int(bw * c.hp / MAX_HP), 5), border_radius=2)
+            if game.mode == "battle":
+                bw = 40
+                pygame.draw.rect(screen, (30, 30, 36), (x - bw // 2, y + 16, bw, 5), border_radius=2)
+                pygame.draw.rect(screen, OK if c.hp > 40 else (255, 150, 90),
+                                 (x - bw // 2, y + 16, int(bw * c.hp / MAX_HP), 5), border_radius=2)
 
         # effects
         for e in game.fx:
@@ -314,7 +316,7 @@ class Renderer:
 
     def map_rect(self) -> pygame.Rect:
         w, h = self.screen.get_size()
-        return pygame.Rect(12, 12, int(w * 0.62), h - 24)
+        return pygame.Rect(12, 12, int(w * 0.70), h - 24)
 
     def panel_rect(self) -> pygame.Rect:
         w, h = self.screen.get_size()
@@ -347,30 +349,50 @@ class Renderer:
         self.screen.blit(img, (x + 6, y + 2))
         return w
 
-    def battery_row(self, c: CarState, x: int, y: int, w: int) -> None:
+    def chip_right(self, right: int, y: int, label: str, color) -> None:
+        w = self.small.size(label)[0] + 12
+        self.chip(right - w, y, label, color)
+
+    def battery_row(self, c: CarState, x: int, y: int, w: int, detailed: bool = True) -> None:
         b = c.battery
         st = b.status
         col = BATTERY_COLORS.get(st, FAINT)
         if st == "charging":
-            # animated fill while on the pad
             pct = int((time.monotonic() * 40) % 100)
             draw_battery_icon(self.screen, x, y + 2, 26, 12, pct, col)
-            mv = f"{b.mv / 1000:.2f} V" if b.mv else "?.?? V"
             full = c.car.status is not None and c.car.status.battery_charged
-            self.text(f"{mv}  charging", (x + 36, y), col, self.small)
-            self.chip(x + w - 90, y - 2, "CHARGED" if full else "CHARGING", OK if full else col)
+            label = "CHARGED" if full else "CHARGING"
+            if detailed:
+                mv = f"{b.mv / 1000:.2f} V" if b.mv else "?.?? V"
+                self.text(f"{mv}  charging", (x + 36, y), col, self.small)
+            else:
+                self.chip_right(x + w, y - 2, label, OK if full else col)
             return
         draw_battery_icon(self.screen, x, y + 2, 26, 12, b.percent, col)
-        mv = f"{b.mv / 1000:.2f} V" if b.mv else "?.?? V"
         pct = f"{b.percent:3d}%" if b.percent is not None else "  ?%"
-        s = f"{mv} {pct}"
-        sag = b.sag_mv
-        if sag:
-            s += f"  sag {sag / 1000:.2f}"
-        self.text(s, (x + 36, y), DIM, self.small)
-        if st != "ok" and st != "unknown":
+        if detailed and b.mv:
+            s = f"{b.mv / 1000:.2f} V {pct}"
+        else:
+            s = pct
+        self.text(s, (x + 36, y), DIM if st in ("ok", "unknown") else col, self.small)
+        if st not in ("ok", "unknown"):
             label = {"weak": "WEAK CELL", "low": "LOW", "critical": "CRITICAL"}[st]
-            self.chip(x + w - 90, y - 2, label, col)
+            self.chip_right(x + w, y - 2, label, col)
+
+    def battery_compact(self, c: CarState, right: int, y: int) -> None:
+        b = c.battery
+        st = b.status
+        col = BATTERY_COLORS.get(st, FAINT)
+        if st == "charging":
+            full = c.car.status is not None and c.car.status.battery_charged
+            label = "FULL" if full else "CHG"
+            self.text_right(label, right, y, OK if full else col, self.small)
+            return
+        pct = f"{b.percent}%" if b.percent is not None else "?"
+        label = pct
+        if st in ("weak", "low", "critical"):
+            label += {"weak": " WEAK", "low": " LOW", "critical": " CRIT"}[st]
+        self.text_right(label, right, y, DIM if st in ("ok", "unknown") else col, self.small)
 
     # ---- screens ----
     def frame(self) -> None:
@@ -401,222 +423,356 @@ class Renderer:
         self.screen.blit(img, (x + 7, y + 3))
         return w
 
-    def draw_pairing(self, game: Game, sources: list, cursors: dict, claims: dict, status: str, controls: str) -> None:
+    def mini_button(self, key: str, x: int, y: int, w: int, h: int, label: str, hint: str,
+                    color, enabled: bool = True, fg=None, sub=None) -> pygame.Rect:
+        rect = pygame.Rect(x, y, w, h)
+        if enabled:
+            pygame.draw.rect(self.screen, color, rect, border_radius=8)
+            fg = fg if fg is not None else (18, 18, 22)
+            sub = sub if sub is not None else (30, 32, 40)
+        else:
+            pygame.draw.rect(self.screen, (40, 42, 50), rect, border_radius=8)
+            pygame.draw.rect(self.screen, (58, 60, 70), rect, 1, border_radius=8)
+            fg = sub = FAINT
+        img = self.font.render(label, True, fg)
+        self.screen.blit(img, (x + 10, y + 3))
+        if hint:
+            self.text_right(hint, x + w - 8, y + h - 17, sub, self.small)
+        self.buttons[key] = rect
+        return rect
+
+    def tab_button(self, key: str, x: int, y: int, w: int, h: int, label: str, active: bool) -> pygame.Rect:
+        rect = pygame.Rect(x, y, w, h)
+        if active:
+            pygame.draw.rect(self.screen, TEXT, rect, border_radius=8)
+            fg = (18, 18, 22)
+        else:
+            pygame.draw.rect(self.screen, CARD, rect, border_radius=8)
+            pygame.draw.rect(self.screen, (60, 62, 74), rect, 1, border_radius=8)
+            fg = DIM
+        img = self.font.render(label, True, fg)
+        self.screen.blit(img, (rect.centerx - img.get_width() // 2,
+                               rect.centery - img.get_height() // 2))
+        self.buttons[key] = rect
+        return rect
+
+    def lobby_status(self, c: CarState):
+        st = c.track_status()
+        label = {"on track": "READY", "idle": "STOPPED", "off track": "OFF TRACK",
+                 "charging": "ON CHARGER", "link lost": "LINK LOST"}.get(st, st.upper())
+        col = OK if st == "on track" else (
+            (120, 200, 255) if st == "charging" else (WARN if st == "off track" else DIM))
+        return label, col
+
+    def car_status(self, game: Game, c: CarState, now: float):
+        """Short, player-facing status for a race card; None when everything is normal."""
+        if game.phase in ("grid", "countdown") and c.grid_state:
+            gs = c.grid_state
+            label = {
+                "driving": "TO THE GRID", "approach": "LINING UP", "placed": "ON THE LINE",
+                "off track": "LEFT OUT", "u-turn": "TURNING", "retry lap": "RETRY",
+                "recovering": "RECOVERING", "recovery pause": "RECOVERY", "bar pending": "LINING UP",
+                "waiting for connection": "WAITING", "waiting for charger removal": "CHARGER",
+            }.get(gs, gs.upper())
+            return label, (OK if gs == "placed" else (WARN if gs == "off track" else DIM))
+        if c.eliminated:
+            return "ELIMINATED", BAD
+        if c.is_dead(now):
+            return "DESTROYED", BAD
+        if game.wrong_way(c):
+            return "WRONG WAY", BAD
+        if c.charging:
+            return "ON CHARGER", (120, 200, 255)
+        if not c.localized():
+            st = c.track_status()
+            label = {"link lost": "LINK LOST", "off track": "OFF TRACK",
+                     "idle": "STOPPED", "charging": "ON CHARGER"}.get(st, st.upper())
+            col = WARN if st == "off track" else ((120, 200, 255) if st == "charging" else DIM)
+            return label, col
+        if now < c.boost_until:
+            return "BOOST", OK
+        if c.ai_track_recovery:
+            return ("FINDING TRACK" if c.ai_track_recovery == "searching" else "NUDGE TO RESUME"), WARN
+        return None
+
+    def lives_pips(self, x: int, y: int, lives: int, color) -> None:
+        self.text("LIVES", (x, y), FAINT, self.small)
+        for i in range(BATTLE_LIVES):
+            col = color if i < lives else (55, 57, 68)
+            pygame.draw.circle(self.screen, col, (x + 48 + i * 11, y + 6), 4)
+        self.text(f"{lives}", (x + 48 + BATTLE_LIVES * 11 + 4, y), TEXT, self.small)
+
+    def _draw_car_card(self, game: Game, c: CarState, box: pygame.Rect, owner, owner_color,
+                       hovering: list, src_color: dict, now: float) -> None:
+        claimed = owner is not None
+        pygame.draw.rect(self.screen, CARD_HI if claimed or hovering else CARD, box, border_radius=14)
+        if claimed:
+            pygame.draw.rect(self.screen, owner_color, (box.x, box.y, box.width, 7),
+                             border_top_left_radius=14, border_top_right_radius=14)
+            pygame.draw.rect(self.screen, owner_color, box, 3, border_radius=14)
+        else:
+            pygame.draw.rect(self.screen, (55, 57, 68), (box.x, box.y, box.width, 7),
+                             border_top_left_radius=14, border_top_right_radius=14)
+            pygame.draw.rect(self.screen, (60, 62, 74), box, 1, border_radius=14)
+
+        if claimed:
+            img = self.font.render(owner.short, True, (18, 18, 22))
+            pw = img.get_width() + 18
+            pygame.draw.rect(self.screen, owner_color, (box.x + 14, box.y + 14, pw, 24), border_radius=8)
+            self.screen.blit(img, (box.x + 23, box.y + 18))
+        elif game.ai_enabled and c.ai_pref:
+            self.chip(box.x + 14, box.y + 14, f"AI · {c.ai_difficulty.title()}", (82, 86, 100))
+        else:
+            self.chip(box.x + 14, box.y + 14, "PARKED", FAINT)
+
+        label, col = self.lobby_status(c)
+        self.chip_right(box.right - 12, box.y + 14, label, col)
+
+        self.draw_car_icon(box.centerx, box.y + (70 if box.height >= 200 else 36),
+                           c.body_color, 2.6, outline=c.color)
+        self.text(c.name, (box.x + 16, box.y + max(56, box.height - 84)), TEXT, self.big)
+        battery_y = box.y + max(78, box.height - 54)
+        self.battery_row(c, box.x + 16, battery_y, box.width - 32, detailed=True)
+
+        if hovering:
+            pygame.draw.rect(self.screen, src_color[hovering[0]], box, 2, border_radius=14)
+            tx = box.x
+            for s in hovering:
+                tx += self.token(tx, box.y - 28, s, src_color[s]) + 6
+                pygame.draw.polygon(self.screen, src_color[s],
+                                    [(tx - 20, box.y - 6), (tx - 12, box.y - 6), (tx - 16, box.y - 1)])
+
+    def _draw_player_strip(self, game: Game, sources: list, claims: dict, src_color: dict,
+                           y: int, h: int) -> None:
+        if not sources:
+            return
+        gap = 12
+        width = (self.screen.get_width() - 56 - gap * (len(sources) - 1)) // len(sources)
+        for i, s in enumerate(sources):
+            box = pygame.Rect(28 + i * (width + gap), y, width, h)
+            pygame.draw.rect(self.screen, CARD, box, border_radius=10)
+            pygame.draw.rect(self.screen, src_color[s], (box.x, box.y, 6, box.height),
+                             border_top_left_radius=10, border_bottom_left_radius=10)
+            self.token(box.x + 14, box.y + 9, s, src_color[s])
+            car = claims.get(s)
+            if car is None:
+                self.text("choose a car", (box.x + 58, box.y + 7), FAINT, self.font)
+                self.text("A / Enter", (box.x + 58, box.y + 29), FAINT, self.small)
+            else:
+                self.text(car.name, (box.x + 58, box.y + 7), TEXT, self.font)
+                st = car.track_status()
+                label = {"on track": "ready", "idle": "stopped", "off track": "off track",
+                         "charging": "charging", "link lost": "link lost"}.get(st, st)
+                col = OK if st == "on track" else ((120, 200, 255) if st == "charging" else DIM)
+                self.text(label, (box.x + 58, box.y + 29), col, self.small)
+
+    def _draw_garage_panel(self, game: Game, source, box: pygame.Rect, claims: dict,
+                           loadouts: dict, cursor: tuple[int, int], src_color: dict, now: float) -> None:
+        color = src_color[source]
+        car = claims.get(source)
+        loadout = loadouts.get(source, Loadout())
+        pygame.draw.rect(self.screen, PANEL, box, border_radius=14)
+        pygame.draw.rect(self.screen, color, box, 2, border_radius=14)
+        header_h = 34
+        pygame.draw.rect(self.screen, color, (box.x, box.y, box.width, header_h),
+                         border_top_left_radius=14, border_top_right_radius=14)
+        title = f"{source.short}   {car.name if car else 'choose a car'}"
+        self.text(title, (box.x + 14, box.y + 7), (18, 18, 22), self.font)
+
+        cy = box.y + header_h + 8
+        car_h = 52 if box.height >= 360 else 38
+        if car is not None:
+            self.draw_car_icon(box.x + 38, cy + 22, car.body_color, 1.9, outline=car.color)
+            self.text(car.name, (box.x + 72, cy), TEXT, self.font)
+            self.battery_row(car, box.x + 72, cy + 22, box.width - 88, detailed=True)
+            label, col = self.lobby_status(car)
+            self.chip_right(box.right - 14, cy, label, col)
+        else:
+            self.text("choose a car in CARS", (box.x + 16, cy + 12), FAINT, self.small)
+        y = cy + car_h
+
+        sections = []
+        if game.mode == "battle":
+            sections.append(("WEAPON", WEAPONS, "weapon"))
+        sections.append(("POWERUP", POWERUPS, "powerup"))
+        row, col = cursor
+        row %= len(sections)
+        col %= len(sections[row][1])
+        cursor = (row, col)
+        card_h = min(132, max(62, (box.height - 200) // 2))
+        for row, (label, items, kind) in enumerate(sections):
+            self.text(label, (box.x + 16, y), FAINT, self.small)
+            y += 18
+            gap = 10
+            if len(items) == 1:
+                card_w = min(260, box.width - 32)
+            else:
+                card_w = (box.width - 32 - gap * (len(items) - 1)) // len(items)
+            x = box.x + 16
+            for col, item in enumerate(items):
+                card = pygame.Rect(x, y, card_w, card_h)
+                selected = (loadout.weapon == item) if kind == "weapon" else (loadout.powerup == item)
+                hovered = cursor == (row, col)
+                pygame.draw.rect(self.screen, CARD_HI if selected else CARD, card, border_radius=8)
+                if selected:
+                    pygame.draw.rect(self.screen, color, card, 3, border_radius=8)
+                elif hovered:
+                    pygame.draw.rect(self.screen, TEXT, card, 2, border_radius=8)
+                else:
+                    pygame.draw.rect(self.screen, (58, 60, 70), card, 1, border_radius=8)
+                item_name = {"blaster": "BLASTER", "mine": "MINE", "uturn": "U-TURN"}.get(item, item.upper())
+                self.text(item_name, (card.x + 10, card.y + 8), TEXT, self.font)
+                stats = {"blaster": "20 dmg · 1.0 s", "mine": "35 dmg · 4.0 s",
+                         "uturn": "180° turn"}.get(item, "")
+                self.text(stats, (card.x + 10, card.y + 30), DIM, self.small)
+                if selected:
+                    pygame.draw.circle(self.screen, color, (card.right - 14, card.y + 14), 6)
+                elif hovered:
+                    pygame.draw.circle(self.screen, TEXT, (card.right - 14, card.y + 14), 6, 2)
+                x += card_w + gap
+            y += card_h + 10
+
+    def _draw_settings_modal(self, game: Game) -> None:
+        w, h = self.screen.get_size()
+        shade = pygame.Surface((w, h), pygame.SRCALPHA)
+        shade.fill((0, 0, 0, 170))
+        self.screen.blit(shade, (0, 0))
+        pw, ph = 480, 238
+        x, y = (w - pw) // 2, (h - ph) // 2
+        box = pygame.Rect(x, y, pw, ph)
+        pygame.draw.rect(self.screen, PANEL, box, border_radius=14)
+        pygame.draw.rect(self.screen, (70, 72, 86), box, 1, border_radius=14)
+        self.text("SETTINGS", (x + 22, y + 18), TEXT, self.big)
+        self.text("MAX SPEED", (x + 22, y + 70), FAINT, self.small)
+        self.text(f"{game.race_speed_limit} mm/s", (x + 22, y + 90), TEXT, self.font)
+        self.mini_button("max_down", x + pw - 138, y + 76, 48, 34, "-", "", (110, 112, 130), fg=TEXT)
+        self.mini_button("max_up", x + pw - 80, y + 76, 48, 34, "+", "", (110, 112, 130), fg=TEXT)
+        self.text("FAIR GAME", (x + 22, y + 132), FAINT, self.small)
+        self.mini_button("fair_toggle", x + pw - 138, y + 138, 106, 34,
+                         "ON" if game.fair_game else "OFF", "H",
+                         OK if game.fair_game else (70, 72, 84), fg=(18, 18, 22) if game.fair_game else TEXT)
+        self.text("R / R-stick: speed", (x + 22, y + 160), FAINT, self.small)
+        self.text("H / LT+R-stick: fair", (x + 22, y + 176), FAINT, self.small)
+        self.mini_button("settings_close", x + pw - 138, y + 190, 106, 34, "CLOSE", "Back",
+                         (110, 112, 130), fg=TEXT)
+
+    def draw_lobby(self, game: Game, sources: list, cursors: dict, claims: dict, loadouts: dict,
+                   garage_cursors: dict, tab: str, settings_open: bool, status: str,
+                   controls_cars: str, controls_garage: str) -> None:
         self.frame()
+        self.buttons = {}
         W, H = self.screen.get_size()
         sources = [s for s in sources if s.alive()]
-        src_color = {}
+        loaded = [s for s in sources if s in loadouts]
+        if len(loaded) < len(sources):
+            for s in sources:
+                loadouts.setdefault(s, Loadout())
         palette = [(255, 214, 92), (120, 200, 255), (200, 150, 255), (140, 240, 170), (255, 160, 120)]
+        src_color = {}
         for i, s in enumerate(sources):
             src_color[s] = getattr(s, "color", palette[i % len(palette)])
 
-        # header
-        self.text("PAIRING", (28, 18), TEXT, self.title)
-        self.text("A / Enter claims a car; leave cars unclaimed for AI-only races. "
-                  "Cars nobody takes are driven by the AI (X / Tab cycles Easy / Normal / Hard / Extreme / Parked).", (28, 60), DIM, self.small)
+        self.text("OVERDRIVE ARENA", (28, 12), TEXT, self.title)
+        self.mini_button("settings", W - 470, 16, 110, 36, "SETTINGS", "F2", (120, 170, 255))
+        track = game.track
+        track_rect = pygame.Rect(W - 350, 16, 180, 36)
+        pygame.draw.rect(self.screen, (26, 28, 35), track_rect, border_radius=8)
+        pygame.draw.rect(self.screen, (60, 62, 74), track_rect, 1, border_radius=8)
+        track_label = f"TRACK · {len(track)} pieces" if track else "NO TRACK"
+        self.text(track_label, (track_rect.x + 10, track_rect.y + 10), OK if track else WARN, self.small)
+        self.mini_button("scan", W - 160, 16, 132, 36, "SCAN", "Y / T", (120, 170, 255))
 
-        # car cards
-        n = max(1, len(game.cars))
-        pad = 22
-        card_w = min(330, (W - 56 - pad * (n - 1)) // n)
-        card_h = 246
-        total = n * card_w + (n - 1) * pad
-        x0 = (W - total) // 2
-        top = 110
-        for i, c in enumerate(game.cars):
-            x = x0 + i * (card_w + pad)
-            box = pygame.Rect(x, top, card_w, card_h)
-            owner = next((s for s, cc in claims.items() if cc is c), None)
-            hovering = [s for s in sources if cursors.get(s, 0) == c.index and claims.get(s) is not c]
-            # cursors floating above the card
-            tx = x
-            for s in hovering:
-                tx += self.token(tx, top - 28, s, src_color[s]) + 6
-                pygame.draw.polygon(self.screen, src_color[s], [(tx - 20, top - 6), (tx - 12, top - 6), (tx - 16, top - 1)])
-            pygame.draw.rect(self.screen, CARD_HI if (owner or hovering) else CARD, box, border_radius=14)
-            if hovering:
-                pygame.draw.rect(self.screen, src_color[hovering[0]], box, 3, border_radius=14)
-            pygame.draw.rect(self.screen, c.color, (box.x, box.y, box.width, 8), border_top_left_radius=14, border_top_right_radius=14)
-            self.draw_car_icon(box.centerx, box.y + 36, c.body_color, 2.4, outline=c.color)
-            self.text(c.name, (box.x + 18, box.y + 62), TEXT, self.big)
-            st = c.track_status()
-            label = {"on track": "connected  ·  on track", "idle": "connected  ·  stopped (position unknown until it drives)",
-                     "off track": "connected  ·  NOT ON THE TRACK", "link lost": "LINK LOST - reconnecting",
-                     "charging": "connected  ·  ON ITS CHARGER (take it off to race)"}[st]
-            col = OK if st == "on track" else (DIM if st == "idle" else ((120, 200, 255) if st == "charging" else WARN))
-            self.text(label, (box.x + 18, box.y + 94), col, self.small)
-            self.battery_row(c, box.x + 18, box.y + 116, box.width - 36)
-
-            # driver slot
-            sy = box.y + 146
-            self.text("DRIVER", (box.x + 18, sy), FAINT, self.small)
-            slot = pygame.Rect(box.x + 18, sy + 18, box.width - 36, 44)
-            if owner is not None:
-                pygame.draw.rect(self.screen, src_color[owner], slot, border_radius=10)
-                self.text(f"{owner.short}  {owner.name}"[:30], (slot.x + 12, slot.y + 11), (18, 18, 22), self.font)
-                hint = "A/Enter or B/Backspace: release"
-            elif game.ai_enabled and c.ai_pref:
-                pygame.draw.rect(self.screen, (52, 56, 70), slot, border_radius=10)
-                self.text("AI", (slot.x + 12, slot.y + 10), TEXT, self.big)
-                self.text(f"{c.ai_difficulty.title()} · computer driver", (slot.x + 52, slot.y + 14), DIM, self.small)
-                hint = "A/Enter: take it   X/Tab: level / park"
-            else:
-                pygame.draw.rect(self.screen, (44, 46, 56), slot, 2, border_radius=10)
-                self.text("PARKED", (slot.x + 12, slot.y + 10), FAINT, self.big)
-                self.text("stays still", (slot.x + 108, slot.y + 14), FAINT, self.small)
-                hint = "A/Enter: take it   X/Tab: give it to the AI"
-            self.text(hint, (box.x + 18, box.y + card_h - 26), FAINT, self.small)
-
-        # Compact assignment strip leaves a dedicated area for records.
-        ly = top + card_h + 14
-        assignments = [f"{s.short}: {claims[s].name if s in claims else 'choose a car'}" for s in sources]
-        self.text("   /   ".join(assignments), (28, ly), DIM, self.font)
-        if status:
-            self.text(status, (28, ly + 96), WARN, self.small)
-        # big buttons: RACE and SCAN TRACK (keyboard / pad shortcuts shown, also mouse-clickable)
-        self.buttons = {}
-        by = ly + 26
-        race_ok = game.can_start(claims.values())
-        self.buttons["scores"] = self.button(W - 330, 18, 302, 42, "HIGH SCORES", "LT + L-stick / F2", GOLD)
-        self.buttons["race"] = self.button(28, by, 240, 46, "RACE", "Start / Options / Space",
-                                           OK if race_ok else (60, 62, 74), enabled=race_ok)
-        scan_car = next((c for c in game.cars if c.localized()), None)
-        if scan_car is None and sources:
-            scan_car = game.cars[cursors.get(sources[0], 0)] if game.cars else None
-        connected = any(c.car.connected for c in game.cars)
-        self.buttons["scan"] = self.button(28 + 240 + 16, by, 240, 46, "SCAN TRACK", "Y / T",
-                                           (120, 170, 255), enabled=connected)
-        # game mode selector
-        mx = 28 + 2 * (240 + 16)
+        self.tab_button("tab_cars", 28, 60, 100, 36, "CARS", tab == "cars")
+        self.tab_button("tab_garage", 138, 60, 130, 36, "GARAGE", tab == "garage")
         race_mode = game.mode == "race"
-        self.buttons["mode"] = self.button(mx, by, 200, 46, "RACE" if race_mode else "BATTLE", "L-stick / M", (200, 150, 255) if race_mode else (255, 150, 90))
-        self.buttons["laps"] = self.button(mx + 208, by, 110, 46, f"{game.lap_target} laps", "D-pad up/down", (110, 112, 130) if race_mode else (70, 72, 84), enabled=race_mode)
-        self.buttons["speed"] = self.button(mx + 326, by, 240, 46, f"MAX {game.race_speed_limit} mm/s", "R-stick / R", (120, 170, 255))
-        self.buttons["fair"] = self.button(mx + 326, by + 49, 300, 34, "FAIR " + ("ON" if game.fair_game else "OFF"), "LT + R-stick / H", OK if game.fair_game else DIM)
-        self.text("laps only, no weapons" if race_mode else "blasters, mines, kills", (mx, by + 52), FAINT, self.small)
-        if not race_ok:
-            self.text("assign a player or AI off its charger", (28, by + 52), FAINT, self.small)
-        if scan_car is not None:
-            self.text("all cars drive one lap", (28 + 256, by + 52), FAINT, self.small)
+        self.mini_button("mode", 290, 60, 132, 36, "RACE" if race_mode else "BATTLE", "M / L-stick",
+                         (200, 150, 255) if race_mode else (255, 150, 90))
+        if race_mode:
+            self.mini_button("laps", 434, 60, 110, 36, f"{game.lap_target} LAPS", "Up/Down",
+                             (110, 112, 130), fg=TEXT)
 
-        # Records and track preview have their own aligned panels.
-        panel_top = by + 88
-        panel_h = max(150, H - panel_top - 65)
-        map_w = min(300, W // 4)
-        mini_rect = pygame.Rect(W - 28 - map_w, panel_top + 22, map_w, panel_h - 22)
-        records_width = mini_rect.x - 44
-        column_w = (records_width - 16) // 2
-        self.record_table(game, pygame.Rect(28, panel_top, column_w, panel_h), "car", "CAR RECORDS")
-        self.record_table(game, pygame.Rect(44 + column_w, panel_top, column_w, panel_h), "controller", "CONTROLLER RECORDS")
-        pygame.draw.rect(self.screen, CARD, mini_rect, border_radius=8)
-        if game.track is not None:
-            key = ("mini", id(game.track), mini_rect.size)
-            if getattr(self, "_mini_key", None) != key:
-                self._mini = MapView(game.track, mini_rect, margin=18)
-                self._mini_key = key
-            self._mini.rect = mini_rect
-            self._mini.draw(self.screen, game, self.font, self.small)
-            pygame.draw.rect(self.screen, (60, 62, 74), mini_rect, 1, border_radius=8)
-            self.text(f"CURRENT MAP  /  {len(game.track)} pieces",
-                      (mini_rect.x, mini_rect.y - 20), DIM, self.small)
+        now = time.monotonic()
+        if tab == "cars":
+            strip_h = 56
+            strip_y = H - 152
+            grid_top = 136
+            content_bottom = strip_y - 10
+            self.text("CHOOSE YOUR CAR", (28, 110), FAINT, self.small)
+            n = len(game.cars)
+            if n:
+                cols = 2 if n == 4 else (3 if n >= 3 else n)
+                rows = (n + cols - 1) // cols
+                gap = 16
+                avail_w = W - 56
+                avail_h = content_bottom - grid_top
+                card_w = min(300, (avail_w - gap * (cols - 1)) // cols)
+                card_h = min(220, (avail_h - gap * (rows - 1)) // rows)
+                card_h = max(120, card_h)
+                x0 = (W - (cols * card_w + gap * (cols - 1))) // 2
+                y0 = grid_top + max(0, (avail_h - rows * card_h - gap * (rows - 1)) // 2)
+                for i, c in enumerate(game.cars):
+                    box = pygame.Rect(x0 + (i % cols) * (card_w + gap),
+                                      y0 + (i // cols) * (card_h + gap), card_w, card_h)
+                    owner = next((s for s, cc in claims.items() if cc is c), None)
+                    hovering = [s for s in sources
+                                if cursors.get(s, 0) == c.index and claims.get(s) is not c]
+                    self._draw_car_card(game, c, box, owner, src_color.get(owner, DIM),
+                                        hovering, src_color, now)
+            else:
+                self.text("No cars connected", (28, 180), WARN, self.big)
+            self._draw_player_strip(game, sources, claims, src_color, strip_y, strip_h)
+            if status:
+                self.text(status[:120], (28, H - 88), WARN, self.small)
+            self.mini_button("quit", 28, H - 56, 112, 36, "QUIT", "Esc", (60, 62, 74), fg=TEXT, sub=DIM)
+            self.text(controls_cars, (152, H - 47), FAINT, self.small)
+            race_ok = game.can_start(claims.values())
+            self.button(W - 300, H - 58, 272, 40,
+                        "START RACE" if race_mode else "START BATTLE", "Start / Space",
+                        OK if race_ok else (60, 62, 74), enabled=race_ok)
         else:
-            pygame.draw.rect(self.screen, WARN, mini_rect, 2, border_radius=8)
-            self.text("NO TRACK MAP", (mini_rect.x + 16, mini_rect.y + 16), WARN, self.big)
-            self.text("Put a car on the track and press", (mini_rect.x + 16, mini_rect.y + 56), DIM, self.small)
-            self.text("SCAN TRACK (Y / T). Without a map the", (mini_rect.x + 16, mini_rect.y + 74), DIM, self.small)
-            self.text("race has no positions and no weapons.", (mini_rect.x + 16, mini_rect.y + 92), DIM, self.small)
+            self.text("GARAGE", (28, 110), FAINT, self.small)
+            content_bottom = H - 100
+            n = len(sources)
+            if n:
+                if n <= 1:
+                    cols, rows = 1, 1
+                elif n == 2:
+                    cols, rows = 2, 1
+                elif n == 3:
+                    cols, rows = 3, 1
+                elif n == 4:
+                    cols, rows = 2, 2
+                else:
+                    cols, rows = 3, 2
+                gap = 16
+                avail_w = W - 56
+                avail_h = content_bottom - 128
+                panel_w = (avail_w - gap * (cols - 1)) // cols
+                panel_h = (avail_h - gap * (rows - 1)) // rows
+                if n == 1:
+                    panel_w = min(760, avail_w)
+                    x0 = (W - panel_w) // 2
+                else:
+                    x0 = 28
+                y0 = 128
+                for i, s in enumerate(sources):
+                    box = pygame.Rect(x0 + (i % cols) * (panel_w + gap),
+                                      y0 + (i // cols) * (panel_h + gap), panel_w, panel_h)
+                    cursor = garage_cursors.get(s, (0, 0))
+                    self._draw_garage_panel(game, s, box, claims, loadouts, cursor, src_color, now)
+            else:
+                self.text("No controllers", (28, 180), WARN, self.big)
+            if status:
+                self.text(status[:120], (28, H - 88), WARN, self.small)
+            self.mini_button("quit", 28, H - 56, 112, 36, "QUIT", "Esc", (60, 62, 74), fg=TEXT, sub=DIM)
+            self.text(controls_garage, (152, H - 47), FAINT, self.small)
+            race_ok = game.can_start(claims.values())
+            self.button(W - 300, H - 58, 272, 40,
+                        "START RACE" if race_mode else "START BATTLE", "Start / Space",
+                        OK if race_ok else (60, 62, 74), enabled=race_ok)
 
-        y = H - 14 - 15 * (controls.count("\n") + 1)
-        for line in controls.split("\n"):
-            y += self.text(line, (28, y), FAINT, self.small) + 1
-
-    def record_table(self, game: Game, rect: pygame.Rect, scope: str, title: str) -> None:
-        pygame.draw.rect(self.screen, PANEL, rect, border_radius=12)
-        x, y = rect.x + 14, rect.y + 12
-        self.text(title, (x, y), GOLD, self.font)
-        self.text_right(game.mode.upper(), rect.right - 14, y, DIM, self.small)
-        y += 27
-        kind = "lap" if scope == "car" else "race"
-        target = 0 if kind == "lap" else game.lap_target
-        overall = [game.records.get(game.track, game.records_mode, driver, kind, target) for driver in ("human", "ai")]
-        overall = [entry for entry in overall if entry]
-        best = min(overall, key=lambda entry: entry["seconds"]) if overall else None
-        self.text((f"MAP BEST {'LAP' if kind == 'lap' else str(target) + '-LAP RACE'}  "
-                   + (f"{best['seconds']:.2f}s · {best['car']}" if best else "—")), (x, y), TEXT, self.small)
-        y += 24
-        lap_x, race_x = rect.right - 102, rect.right - 14
-        self.text("RANK / " + ("CAR" if scope == "car" else "CONTROLLER"), (x, y), FAINT, self.small)
-        self.text_right("BEST LAP", lap_x, y, DIM, self.small)
-        self.text_right(f"{game.lap_target} LAPS", race_x, y, DIM, self.small)
-        y += 22
-        rows = game.records.leaderboard(game.track, game.records_mode, scope, game.lap_target)
-        capacity = max(1, (rect.bottom - y - 26) // 30)
-        # Cycle pages so saved/disconnected cars and controllers remain visible.
-        pages = max(1, math.ceil(len(rows) / capacity))
-        page = int(time.monotonic() // 7) % pages
-        for index, row in enumerate(rows[page * capacity:(page + 1) * capacity], page * capacity + 1):
-            color = GOLD if index == 1 else TEXT
-            self.text(f"{index:02d}", (x, y), color, self.font)
-            label = row["label"] + (" · AI" if row["driver_type"] == "ai" else "")
-            available = max(30, lap_x - x - 112)
-            while self.small.size(label)[0] > available and len(label) > 2:
-                label = label[:-2] + "…"
-            self.text(label, (x + 28, y + 2), TEXT, self.small)
-            for kind, right in (("lap", lap_x), ("race", race_x)):
-                entry = row[kind]
-                value = f"{entry['seconds']:.2f}s" if entry else "—"
-                self.text_right(value, right, y, color if entry else FAINT, self.font)
-            y += 30
-        if not rows:
-            self.text("Finish a clean lap to set a record", (x, y + 8), DIM, self.small)
-        note = (game.records.error or (f"Page {page + 1}/{pages} · changes every 7s" if pages > 1 else "Saved for this map · fastest first"))
-        self.text(note, (x, rect.bottom - 22), WARN if game.records.error else FAINT, self.small)
-
-    def scores_capacity(self) -> int:
-        return max(1, (self.screen.get_height() - 330) // 48)
-
-    def draw_scores(self, game: Game, board_index: int, page: int) -> None:
-        self.frame()
-        self.buttons = {}
-        w, h = self.screen.get_size()
-        self.text("HIGH SCORES", (28, 24), TEXT, self.title)
-        self.text("Every saved map, car and controller", (28, 64), DIM, self.small)
-        self.buttons["back"] = self.button(w - 240, 24, 212, 44, "BACK", "Esc / Back", DIM)
-        boards = game.records.archive()
-        self.buttons["previous"] = self.button(28, 104, 200, 44, "PREVIOUS", "Left / LB", DIM)
-        self.buttons["next"] = self.button(w - 228, 104, 200, 44, "NEXT", "Right / RB", DIM)
-        if not boards:
-            self.text("No high scores yet. Complete a lap to set your first record.", (28, 204), TEXT, self.font)
-            if game.records.error:
-                self.text(game.records.error, (28, 250), WARN, self.small)
-            return
-        group, rows = boards[board_index % len(boards)]
-        map_id, mode, scope, driver, kind, laps = group
-        current = game.track and map_id == game.records.map_key(game.track)
-        self.text(f"BOARD {board_index % len(boards) + 1} / {len(boards)}", (250, 115), GOLD, self.font)
-        mode_label = {"race_fair": "FAIR GAME", "race": "RACE", "battle": "BATTLE"}.get(mode, mode.upper())
-        self.text(f"{'CURRENT MAP' if current else 'MAP'} {map_id}  /  {mode_label}", (28, 168), TEXT, self.font)
-        label = {"overall": "Overall", "car": "Per car", "controller": "Per controller", "pair": "Car + controller"}.get(scope, scope)
-        self.text(f"{label}  /  {driver.upper()}  /  {'Best lap' if kind == 'lap' else laps + '-lap race'}", (28, 198), GOLD, self.font)
-        self.text("RANK    CAR", (40, 238), DIM, self.small)
-        self.text("CONTROLLER / DRIVER", (w // 3, 238), DIM, self.small)
-        self.text_right("BEST TIME", w - 44, 238, DIM, self.small)
-        capacity = self.scores_capacity()
-        pages = max(1, math.ceil(len(rows) / capacity))
-        page %= pages
-        for index, row in enumerate(rows[page * capacity:(page + 1) * capacity], page * capacity):
-            y = 262 + (index % capacity) * 48
-            pygame.draw.rect(self.screen, CARD, (28, y, w - 56, 42), border_radius=7)
-            self.text(f"{index + 1:02d}  {row['car']}", (40, y + 10), GOLD if index == 0 else TEXT, self.font)
-            driver_label = row.get("controller", row.get("driver", "Unknown"))
-            available = w - 180 - w // 3
-            while self.small.size(driver_label)[0] > available and len(driver_label) > 2:
-                driver_label = driver_label[:-2] + "…"
-            self.text(driver_label, (w // 3, y + 13), DIM, self.small)
-            self.text_right(f"{row['seconds']:.3f}s", w - 44, y + 10, TEXT, self.font)
-        self.buttons["page_previous"] = self.button(28, h - 56, 215, 40, "PAGE UP", "D-pad up / +", DIM)
-        self.buttons["page_next"] = self.button(w - 243, h - 56, 215, 40, "PAGE DOWN", "D-pad down / -", DIM)
-        self.text(f"Page {page + 1}/{pages}  /  {len(rows)} records", (265, h - 43), DIM, self.small)
+        if settings_open:
+            self._draw_settings_modal(game)
 
     def draw_scan(self, game: Game, scanners: dict, elapsed: float) -> None:
         self.frame()
@@ -647,12 +803,12 @@ class Renderer:
             else:
                 col, label = TEXT, state
             self.text(label, (box.x + 18, box.y + 40), col, self.small)
-            details = f"{getattr(sc, 'commanded_speed', 0)} mm/s / {seen} codes / {sc.inferred_boundaries} repaired boundaries"
+            details = f"{getattr(sc, 'commanded_speed', 0)} mm/s · {seen} codes · {sc.inferred_boundaries} repairs"
             self.text(details, (box.x + 18, box.y + 62), FAINT, self.small)
             y += box.height + 8
-        self.text("cars share missing pieces and turn measurements",
+        self.text("cars share missing pieces and turns",
                   (x, y + 6), FAINT, self.small)
-        self.text("speed adapts 400-500 mm/s; lost codes stop that car", (x, y + 24), FAINT, self.small)
+        self.text("400-500 mm/s · lost codes stop that car", (x, y + 24), FAINT, self.small)
         self.text("Back / Esc: cancel", (x, pr.bottom - 30), FAINT, self.small)
 
     def draw_scan_map(self, scanners: dict) -> None:
@@ -709,132 +865,75 @@ class Renderer:
             self.draw_no_track("No map: weapons and positions are disabled.\nGo back (Esc / Back) and scan the track.")
         pr = self.panel_rect()
         pygame.draw.rect(self.screen, PANEL, pr, border_radius=10)
-        x, y = pr.x + 18, pr.y + 14
+        x, y = pr.x + 16, pr.y + 12
         now = time.monotonic()
-        self.text("RACE" if game.mode == "race" else "BATTLE", (x, y), TEXT, self.title)
-        if game.mode == "race":
-            self.text(f"first to {game.lap_target} laps", (x + 92, y + 14), DIM, self.small)
+        race_mode = game.mode == "race"
+        self.text("RACE" if race_mode else "BATTLE", (x, y), TEXT, self.title)
         if game.race_start_t:
             t = now - game.race_start_t
-            self.text_right(f"{int(t // 60):02d}:{t % 60:05.2f}", pr.right - 18, y + 8, DIM, self.mono_big)
+            self.text_right(f"{int(t // 60):02d}:{t % 60:05.2f}", pr.right - 16, y + 8, DIM, self.mono_big)
         y += 44
         ranks = {c.index: i + 1 for i, c in enumerate(game.ranking())}
         n = len(game.cars)
-        h = min(128, (pr.height - 250) // max(1, n) - 8)
+        h = min(96, max(78, (pr.height - 100) // max(1, n) - 8))
         for c in game.cars:
-            box = pygame.Rect(x, y, pr.width - 36, h)
+            box = pygame.Rect(x, y, pr.width - 32, h)
             dead = c.is_dead(now)
             pygame.draw.rect(self.screen, CARD, box, border_radius=10)
-            pygame.draw.rect(self.screen, c.color, (box.x, box.y, 7, h), border_top_left_radius=10, border_bottom_left_radius=10)
-            # rank badge
-            pygame.draw.circle(self.screen, GOLD if ranks[c.index] == 1 else (70, 72, 84), (box.x + 32, box.y + 20), 12)
-            img = self.small.render(str(ranks[c.index]), True, (18, 18, 22) if ranks[c.index] == 1 else TEXT)
-            self.screen.blit(img, (box.x + 32 - img.get_width() // 2, box.y + 13))
-            self.text(c.name, (box.x + 52, box.y + 6), (120, 120, 126) if dead else TEXT, self.big)
-            self.text(c.driver_label(), (box.x + 52, box.y + 34), DIM, self.small)
-            # status chip
-            cx = box.x + 52 + self.small.size(c.driver_label())[0] + 10
-            if game.phase == "race" and game.wrong_way(c):
-                self.chip(cx, box.y + 33, "WRONG WAY", BAD)
-            elif c.grid_state == "missed start":
-                self.chip(cx, box.y + 33, "LEFT OUT (start missed)", WARN)
-            elif c.grid_state == "off track":
-                self.chip(cx, box.y + 33, "LEFT OUT (off track)", WARN)
-            elif c.grid_state == "charging" or (c.charging and not dead):
-                self.chip(cx, box.y + 33, "ON CHARGER", (120, 200, 255))
-            elif game.phase in ("grid", "countdown") and c.grid_state:
-                gs = c.grid_state
-                self.chip(cx, box.y + 33, {"driving": "TO THE GRID", "approach": "LINING UP", "placed": "ON THE LINE", "off track": "LEFT OUT (off track)",
-                                           "u-turn": "TURNING AROUND", "retry lap": "RETRYING START"}.get(gs, gs.upper()),
-                          OK if gs == "placed" else (WARN if gs == "off track" else (120, 120, 130)))
-            elif now < c.boost_until:
-                self.chip(cx, box.y + 33, "BOOST", OK)
-            elif dead:
-                self.chip(cx, box.y + 33, "DESTROYED", BAD)
-            elif c.ai_track_recovery:
-                self.chip(cx, box.y + 33, "FINDING TRACK" if c.ai_track_recovery == "searching" else "NUDGE TO RESUME", WARN)
-            elif not c.localized():
-                st = c.track_status()
-                self.chip(cx, box.y + 33, {"link lost": "LINK LOST", "off track": "OFF TRACK", "idle": "STOPPED", "charging": "ON CHARGER"}.get(st, st.upper()),
-                          WARN if st == "off track" else ((120, 200, 255) if st == "charging" else (120, 120, 130)))
-            bx, by, bw = box.x + 20, box.y + 54, box.width - 40
-            if game.mode == "battle":
-                # cooldown dials + K/D
-                self._dial(box.right - 40, box.y + 26, 15, max(0.0, c.fire_ready_at - now) / BLASTER_COOLDOWN_S, c.color, "F")
-                self._dial(box.right - 82, box.y + 26, 15, max(0.0, c.mine_ready_at - now) / MINE_COOLDOWN_S, (255, 140, 60), "M")
-                self.text_right(f"K {c.kills}  D {c.deaths}", box.right - 104, box.y + 18, DIM, self.small)
-                # HP bar with lag
-                v = mv.views.get(c.index) if mv else None
-                lag = v.hp_lag if v else c.hp
-                pygame.draw.rect(self.screen, (40, 40, 48), (bx, by, bw, 9), border_radius=4)
-                pygame.draw.rect(self.screen, (150, 60, 60), (bx, by, int(bw * lag / MAX_HP), 9), border_radius=4)
-                pygame.draw.rect(self.screen, OK if c.hp > 40 else (255, 150, 90), (bx, by, int(bw * c.hp / MAX_HP), 9), border_radius=4)
-                self.text_right(f"{c.hp}", box.right - 20, by - 14, DIM, self.small)
-            else:
-                # lap progress bar towards the target
-                self.text_right(f"LAP {c.laps} / {game.lap_target}", box.right - 20, box.y + 12, TEXT, self.big)
+            pygame.draw.rect(self.screen, c.color, (box.x, box.y, 7, h),
+                             border_top_left_radius=10, border_bottom_left_radius=10)
+            pygame.draw.circle(self.screen, GOLD if ranks[c.index] == 1 else (70, 72, 84),
+                               (box.x + 30, box.y + 20), 12)
+            img = self.small.render(str(ranks[c.index]), True,
+                                    (18, 18, 22) if ranks[c.index] == 1 else TEXT)
+            self.screen.blit(img, (box.x + 30 - img.get_width() // 2, box.y + 13))
+            self.text(c.name, (box.x + 50, box.y + 3), (120, 120, 126) if dead else TEXT, self.big)
+            driver = c.source.short if c.source is not None else (
+                f"AI · {c.ai_difficulty.title()}" if c.ai else "PARKED")
+            self.text(driver, (box.x + 50, box.y + 26), DIM, self.small)
+            status = self.car_status(game, c, now)
+            if status:
+                self.chip(box.x + 50 + self.small.size(driver)[0] + 10, box.y + 25,
+                          status[0], status[1])
+            bx, by, bw = box.x + 20, box.y + 44, box.width - 40
+            if race_mode:
+                self.text_right(f"LAP {c.laps} / {game.lap_target}", box.right - 18, box.y + 4,
+                                TEXT, self.big)
                 prog = c.loc.progress() if c.localized() and c.loc else None
-                n = len(game.track.pieces) if game.track else 1
-                frac = min(1.0, (c.laps + ((prog or 0.0) / n if prog is not None else 0.0)) / max(1, game.lap_target))
+                pieces = len(game.track.pieces) if game.track else 1
+                frac = min(1.0, (c.laps + ((prog or 0.0) / pieces if prog is not None else 0.0))
+                           / max(1, game.lap_target))
                 pygame.draw.rect(self.screen, (40, 40, 48), (bx, by, bw, 9), border_radius=4)
                 pygame.draw.rect(self.screen, c.color, (bx, by, int(bw * frac), 9), border_radius=4)
-            # speed + lane
-            sy = by + 15
-            spd = c.speed_sent()
-            pygame.draw.rect(self.screen, (40, 40, 48), (bx, sy, bw - 90, 5), border_radius=2)
-            pygame.draw.rect(self.screen, c.color, (bx, sy, int((bw - 90) * min(1.0, spd / max(1, c.max_speed))), 5), border_radius=2)
-            self.text(f"{spd:>4} / {c.max_speed} mm/s", (bx, sy + 8), DIM, self.small)
-            if c.fair_penalty:
-                self.text(f"FAIR -{c.fair_penalty} mm/s", (bx + 180, sy + 8), WARN, self.small)
-            pos_age = f"{max(0, now - c.loc.last_update):.1f}s" if c.loc and c.loc.index is not None else "--"
-            radio_age = f"{max(0, now - c.last_radio_t):.1f}s" if c.last_radio_t else "--"
-            self.text(f"P {pos_age}  BT {radio_age}", (bx + 150, sy + 8), DIM, self.small)
-            for i, lane in enumerate(LANES_MM):
-                lx = box.right - 20 - (4 - i) * 18
-                on = abs(c.target_offset - lane) < 12
-                pygame.draw.rect(self.screen, c.color if on else (55, 57, 68), (lx, sy - 1, 14, 8), border_radius=2)
-            self.text_right("lane", box.right - 20, sy + 8, FAINT, self.small)
-            # laps + battery
-            ly = sy + 26
-            if h >= 118:
-                lap = f"lap {c.laps}"
-                if c.lap_start_t is not None and game.track:
-                    lap += f"  {min(99, max(0, int(100 * c._lap_travel / len(game.track))))}%"
-                elif not c.last_lap_s:
-                    lap += f"  {c.lap_note}"
-                if c.last_lap_s:
-                    lap += f"  last {c.last_lap_s:.2f}s"
-                if c.best_lap_s:
-                    lap += f"  best {c.best_lap_s:.2f}s"
-                self.text(lap, (bx, ly), DIM, self.small)
-                ly += 18
-            self.battery_row(c, bx, ly, bw)
+                self.battery_compact(c, box.right - 18, box.y + 62)
+            else:
+                self.text_right(f"HP {c.hp}", box.right - 18, box.y + 4, DIM, self.small)
+                pygame.draw.rect(self.screen, (40, 40, 48), (bx, by, bw, 9), border_radius=4)
+                pygame.draw.rect(self.screen, OK if c.hp > 40 else (255, 150, 90),
+                                 (bx, by, int(bw * c.hp / MAX_HP), 9), border_radius=4)
+                self.lives_pips(bx, by + 16, c.lives, c.color)
+                self.text(f"KILLS {c.kills}", (bx + 160, by + 16), DIM, self.small)
+                self.battery_compact(c, box.right - 18, by + 16)
             y += h + 8
-        # kill feed
-        y += 8
-        for t, msg, col in list(game.events)[:8]:
-            age = now - t
-            if y > pr.bottom - 60:
-                break
-            img = self.small.render(msg, True, col if age < 4 else DIM)
-            img.set_alpha(255 if age < 6 else 140)
-            self.screen.blit(img, (x, y))
-            y += 17
-        y = pr.bottom - 14 - 15 * (controls.count("\n") + 1)
+        y = pr.bottom - 10 - 15 * (controls.count("\n") + 1)
         for line in controls.split("\n"):
             y += self.text(line, (x, y), FAINT, self.small) + 1
         if overlay:
             mr = self.map_rect()
             big = pygame.font.SysFont("segoeui,consolas", 96 if len(overlay) <= 3 else 44, bold=True)
             img = big.render(overlay, True, TEXT)
-            shade = pygame.Surface((img.get_width() + 80, img.get_height() + 60), pygame.SRCALPHA)
-            shade.fill((10, 10, 14, 170))
+            simg = self.font.render(sub, True, DIM) if sub else None
+            content_w = max(img.get_width(), simg.get_width() if simg else 0)
+            content_h = img.get_height() + (simg.get_height() + 12 if simg else 0)
+            shade = pygame.Surface((content_w + 80, content_h + 44), pygame.SRCALPHA)
+            shade.fill((10, 10, 14, 180))
             ox, oy = mr.centerx - shade.get_width() // 2, mr.centery - shade.get_height() // 2
             self.screen.blit(shade, (ox, oy))
-            self.screen.blit(img, (mr.centerx - img.get_width() // 2, mr.centery - img.get_height() // 2 - 8))
-            if sub:
-                simg = self.font.render(sub, True, DIM)
-                self.screen.blit(simg, (mr.centerx - simg.get_width() // 2, oy + shade.get_height() - 30))
+            ty = oy + 18
+            self.screen.blit(img, (mr.centerx - img.get_width() // 2, ty))
+            if simg:
+                self.screen.blit(simg, (mr.centerx - simg.get_width() // 2,
+                                        ty + img.get_height() + 6))
 
     def button(self, x: int, y: int, w: int, h: int, label: str, hint: str, color, enabled: bool = True) -> pygame.Rect:
         rect = pygame.Rect(x, y, w, h)
@@ -849,16 +948,6 @@ class Renderer:
         self.text(label, (x + 16, y + (2 if stacked else 8)), fg, self.big)
         self.text_right(hint, x + w - 14, y + (29 if stacked else 16), sub, self.small)
         return rect
-
-    def _dial(self, cx: int, cy: int, r: int, frac: float, color, label: str) -> None:
-        pygame.draw.circle(self.screen, (44, 46, 56), (cx, cy), r)
-        if frac <= 0:
-            pygame.draw.circle(self.screen, color, (cx, cy), r, 3)
-        else:
-            rect = pygame.Rect(cx - r, cy - r, 2 * r, 2 * r)
-            pygame.draw.arc(self.screen, color, rect, math.pi / 2, math.pi / 2 + math.tau * (1 - frac), 3)
-        img = self.small.render(label, True, TEXT if frac <= 0 else FAINT)
-        self.screen.blit(img, (cx - img.get_width() // 2, cy - img.get_height() // 2))
 
     def draw_message(self, title: str, lines: list[str]) -> None:
         self.frame()

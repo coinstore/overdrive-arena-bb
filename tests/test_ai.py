@@ -83,6 +83,9 @@ class AITests(unittest.TestCase):
             app.keyboard.pressed.side_effect = lambda action: action == I.READY
             app.keyboard.alive.return_value = True
             app.cursors = {}
+            app.garage_cursors = {}
+            app.loadouts = {}
+            app.setup_tab, app.settings_open, app.status = "cars", False, ""
             app.click = click
             app.renderer = SimpleNamespace(buttons={'race': pygame.Rect(0, 0, 20, 20)})
             app.start_race = Mock()

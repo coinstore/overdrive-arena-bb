@@ -1,8 +1,6 @@
-"""Controller flow, persistent records and sensor/prediction race regressions."""
-import tempfile
+"""Controller flow, battle rules and sensor/prediction race regressions."""
 import time
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -10,8 +8,7 @@ from anki import protocol as P
 from anki.position_filter import PositionFilter
 from anki.track import CarLocalizer, Piece, Track, START, STRAIGHT, TURN, FNF, locate
 from game.colors import CAR_PAINT, paint_for_model
-from game.game import CarState, DEATH_STOP_S, Game, PLAYER_COLORS, START_SPEED
-from game.records import Records
+from game.game import CarState, DEATH_STOP_S, Game, Loadout, PLAYER_COLORS, START_SPEED
 from game import inputs as I
 from app import App, PAIRING, RACE, GRID, READY, COUNTDOWN
 
@@ -95,9 +92,6 @@ class PredictionTests(unittest.TestCase):
         self.game.running = False
         self.game.update_fair_penalties()
         self.assertEqual([c.fair_penalty for c in cars], [0, 0, 0])
-        self.assertEqual(self.game.records_mode, 'race_fair')
-        self.game.fair_game = False
-        self.assertEqual(self.game.records_mode, 'race')
 
     def test_fair_penalty_applies_after_ceiling_and_never_prevents_stop(self):
         self.car.car.set_speed = Mock()
@@ -926,7 +920,7 @@ class PredictionTests(unittest.TestCase):
         self.game._human(self.car, .02, self.now)
         self.car.u_turn.assert_not_called()
 
-    def test_finished_race_is_recorded_once_and_ranked_by_finish_time(self):
+    def test_finished_race_is_ranked_by_finish_time(self):
         self.game.race_start_t = self.now - 5
         self.game.lap_target = 1
         self.car.lap_start_t = self.now - 5
@@ -934,73 +928,11 @@ class PredictionTests(unittest.TestCase):
         self.car._lap_travel = len(self.track) - .2
         self.finish_fix(self.now - .1)
         self.game._track_lap_sample(self.car, .7, self.now)
-        record = self.game.records.get(self.track, 'race', 'ai', 'race', 1)
-        self.assertAlmostEqual(record['seconds'], 4.9)
+        self.assertAlmostEqual(self.car.race_finish_s, 4.9)
+        self.assertIs(self.game.winner, self.car)
         self.game._track_lap_sample(self.car, .3, self.now + .1)
         self.game._track_lap_sample(self.car, .7, self.now + .2)
         self.assertEqual(self.car.laps, 1)
-
-
-class RecordTests(unittest.TestCase):
-    def test_personal_records_saved_even_when_overall_record_is_faster(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'records.json'
-            records = Records(path)
-            track = circuit()
-            pad1 = SimpleNamespace(name='Xbox', short='P1', record_id='xbox:1')
-            pad2 = SimpleNamespace(name='Xbox', short='P2', record_id='xbox:2')
-            car = SimpleNamespace(name='Dynamo', car=SimpleNamespace(address='A'), source=pad1, driver_label=lambda: 'player')
-            records.record(track, 'race', car, 'lap', 5)
-            car.source = pad2
-            records.record(track, 'race', car, 'lap', 8)
-            records.record(track, 'race', car, 'race', 45, 5)
-            car.car.address, car.name = 'B', 'X52'
-            records.record(track, 'race', car, 'lap', 9)
-            loaded = Records(path)
-            cars = loaded.leaderboard(track, 'race', 'car', 5)
-            pads = loaded.leaderboard(track, 'race', 'controller', 5)
-            self.assertEqual([r['lap']['seconds'] for r in cars], [5, 9])
-            self.assertEqual([r['lap']['seconds'] for r in pads], [5, 8])
-            self.assertEqual(pads[1]['race']['seconds'], 45)
-            self.assertIsNone(loaded.leaderboard(track, 'race', 'controller', 10)[1]['race'])
-            self.assertEqual(len(loaded.leaderboard(track, 'race', 'pair', 5)), 3)
-
-    def test_legacy_overall_records_survive_new_personal_records(self):
-        records = Records()
-        track = circuit()
-        key = records.key(track, 'race', 'human', 'lap')
-        records.entries[key] = {'car': 'Old champion', 'driver': 'P1', 'seconds': 4.5}
-        car = SimpleNamespace(name='Test', source=SimpleNamespace(name='Pad', short='P2'), driver_label=lambda: 'P2')
-        records.record(track, 'race', car, 'lap', 8)
-        self.assertEqual(records.get(track, 'race', 'human', 'lap')['seconds'], 4.5)
-        self.assertEqual(len(records.leaderboard(track, 'race', 'controller', 5)), 1)
-
-    def test_roundtrip_and_separate_categories(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'records.json'
-            records = Records(path)
-            car = SimpleNamespace(name='Test', source=object(), driver_label=lambda: 'P1')
-            track = circuit()
-            records.record(track, 'race', car, 'lap', 7.2)
-            records.record(track, 'race', car, 'lap', 9.0)
-            records.record(track, 'race', car, 'race', 40.0, 5)
-            loaded = Records(path)
-            self.assertEqual(loaded.get(circuit(), 'race', 'human', 'lap')['seconds'], 7.2)
-            self.assertIsNone(loaded.get(track, 'race', 'ai', 'lap'))
-            self.assertIsNone(loaded.get(track, 'battle', 'human', 'lap'))
-            self.assertIsNone(loaded.get(track, 'race', 'human', 'race', 3))
-            track.pieces[2].turn = 'L'
-            self.assertIsNone(loaded.get(track, 'race', 'human', 'lap'))
-
-    def test_corrupt_file_is_preserved(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'records.json'
-            path.write_text('broken')
-            records = Records(path)
-            car = SimpleNamespace(name='Test', source=None, driver_label=lambda: 'AI')
-            records.record(circuit(), 'race', car, 'lap', 5)
-            self.assertTrue(records.error)
-            self.assertEqual(path.read_text(), 'broken')
 
 
 class ControllerTests(unittest.TestCase):
@@ -1023,8 +955,13 @@ class ControllerTests(unittest.TestCase):
         self.app.game = Game(Mock(), [car], circuit(), True, None)
         self.app.game.begin_grid = Mock()
         self.app.cursors, self.app.claims, self.app.identified = {}, {}, {}
+        self.app.garage_cursors = {self.pad: (0, 0)}
+        self.app.loadouts = {self.pad: Loadout()}
         self.app.click, self.app.state = None, PAIRING
+        self.app.setup_tab, self.app.settings_open, self.app.status = "cars", False, ""
         self.app.lap_choices = (3, 5, 10, 20)
+        self.app.renderer = Mock()
+        self.app.renderer.buttons = {}
         self.app.update_identify_lights = Mock()
 
     def press(self, action):
@@ -1069,30 +1006,36 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.app.state, COUNTDOWN)
         self.app.game.begin_countdown.assert_called_once()
 
-    def test_scores_controller_shortcut_and_back(self):
-        self.app.game.stop_all = Mock()
-        self.pad.brake.return_value = 1.0
-        self.press(I.TOGGLE_MODE)
-        with patch('game.score_page.LiveScores') as server, patch('webbrowser.open') as browser:
-            self.app.pairing_tick()
-        browser.assert_called_once()
-        self.assertEqual(self.app.state, PAIRING)
-        self.app.game.stop_all.assert_not_called()
-        server.assert_called_once()
+    def test_tab_switch_and_garage_equip(self):
+        self.press(I.TAB_RIGHT)
+        self.app.pairing_tick()
+        self.assertEqual(self.app.setup_tab, "garage")
 
-    def test_archive_preserves_all_boards_and_sorts_times(self):
-        records = Records()
-        records.entries = {
-            'map1:race:human:lap:0': {'car': 'Old', 'seconds': 9},
-            'map2:race_fair:human-car-a:race:5': {'car': 'A', 'seconds': 40, 'scope': 'car', 'driver_type': 'human'},
-            'map2:race_fair:human-car-b:race:5': {'car': 'B', 'seconds': 35, 'scope': 'car', 'driver_type': 'human'},
-            'map2:race_fair:human-pair-a:race:10': {'car': 'A', 'seconds': 90, 'scope': 'pair', 'driver_type': 'human'},
-        }
-        boards = records.archive()
-        self.assertEqual(len(boards), 3)
-        self.assertEqual(sum(len(rows) for _, rows in boards), 4)
-        self.assertEqual(boards[0][0][2], 'overall')
-        self.assertEqual([row['car'] for _, rows in boards for row in rows if row['seconds'] in (35, 40)], ['B', 'A'])
+        self.app.garage_cursors[self.pad] = (0, 1)
+        self.press(I.SELECT)
+        self.app.pairing_tick()
+        self.assertEqual(self.app.loadouts[self.pad].weapon, "mine")
+
+    def test_settings_modal_toggles_fair_and_closes_with_back(self):
+        self.press(I.SETTINGS)
+        self.app.pairing_tick()
+        self.assertTrue(self.app.settings_open)
+
+        self.press(I.FAIR_GAME)
+        self.app.pairing_tick()
+        self.assertTrue(self.app.game.fair_game)
+
+        self.press(I.BACK)
+        self.app.pairing_tick()
+        self.assertFalse(self.app.settings_open)
+
+    def test_start_race_assigns_the_players_loadout(self):
+        self.app.claims[self.pad] = self.app.cars[0]
+        self.app.loadouts[self.pad].weapon = "mine"
+        self.press(I.READY)
+        self.app.pairing_tick()
+        self.assertEqual(self.app.state, GRID)
+        self.assertEqual(self.app.cars[0].loadout.weapon, "mine")
 
     def test_secondary_button_no_longer_recovers_in_race(self):
         self.app.game.tick = Mock()

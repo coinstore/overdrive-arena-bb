@@ -1,6 +1,7 @@
 """Render the race and pairing screens with fake cars (no Bluetooth) and save PNGs for eyeballing."""
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -11,9 +12,13 @@ import pygame  # noqa: E402
 
 from anki import protocol as P  # noqa: E402
 from anki.track import TrackScanner, ScanEvidence  # noqa: E402
-from game.game import CarState, Game, PLAYER_COLORS  # noqa: E402
+import game.game as game_module  # noqa: E402
+from game.game import CarState, Game, Loadout, PLAYER_COLORS  # noqa: E402
 from game.render import Renderer  # noqa: E402
 from game.inputs import Keyboard  # noqa: E402
+
+# The fake cars must not append synthetic readings to the real battery log.
+game_module.BATTERY_LOG = Path(tempfile.gettempdir()) / "overdrive_render_demo_battery.csv"
 
 
 class FakeVehicle:
@@ -79,35 +84,50 @@ def main(out_dir: Path):
         for c in cars:
             if c.loc:
                 c.loc.advance(0.05)
-        r.draw_race(game, "controls line 1\ncontrols line 2")
+        r.draw_race(game, "pad: R2 gas · L2 brake · stick lanes\nX weapon · A powerup · B stop\nkey: W/S · A/D · Q/E · F/U · Space · Esc")
         time.sleep(0.02)
     pygame.image.save(screen, str(out_dir / "render_race.png"))
+    game.winner = cars[0]
+    r.draw_race(game, "pad: R2 gas · L2 brake · stick lanes\nX weapon · A powerup · B stop\nkey: W/S · A/D · Q/E · F/U · Space · Esc", overlay="X52 WINS",
+                sub="3 kills  -  Start / Options: battle again  -  Back: menu")
+    pygame.image.save(screen, str(out_dir / "render_race_win.png"))
+    game.winner = None
     game.phase = "grid"
     cars[0].grid_state, cars[1].grid_state, cars[2].grid_state = "placed", "driving", "off track"
-    r.draw_race(game, "controls line 1\ncontrols line 2", overlay="TO THE START LINE  1/3", sub="cars drive themselves to the grid  -  Back / Esc cancels")
+    r.draw_race(game, "pad: R2 gas · L2 brake · stick lanes\nX weapon · A powerup · B stop\nkey: W/S · A/D · Q/E · F/U · Space · Esc", overlay="TO THE START LINE  1/3", sub="cars drive themselves to the grid  -  Back / Esc cancels")
     pygame.image.save(screen, str(out_dir / "render_grid.png"))
     game.phase = "countdown"
-    r.draw_race(game, "controls line 1\ncontrols line 2", overlay="2", sub="get ready")
+    r.draw_race(game, "pad: R2 gas · L2 brake · stick lanes\nX weapon · A powerup · B stop\nkey: W/S · A/D · Q/E · F/U · Space · Esc", overlay="2", sub="get ready")
     pygame.image.save(screen, str(out_dir / "render_countdown.png"))
     game.phase = "race"
     game.mode = "race"; game.lap_target = 5
-    # Synthetic records for visual QA only; Game's default store is in-memory.
     for i, c in enumerate(cars):
         c.car.address = f"demo-car-{i}"
         pad = Keyboard()
-        pad.short, pad.name, pad.record_id = f"P{i + 1}", "Wireless Controller", f"demo:{i}"
+        pad.short, pad.name = f"P{i + 1}", "Wireless Controller"
         c.source = pad
-        game.records.record(track, "race", c, "lap", 6.98 + i * .63)
-        game.records.record(track, "race", c, "race", 38.24 + i * 2.61, 5)
-    r.draw_race(game, "controls line 1\ncontrols line 2")
+    r.draw_race(game, "pad: R2 gas · L2 brake · stick lanes\nX weapon · A powerup · B stop\nkey: W/S · A/D · Q/E · F/U · Space · Esc")
     pygame.image.save(screen, str(out_dir / "render_racemode.png"))
-    r.draw_pairing(game, [kb], {kb: 1}, {}, "RACE mode: laps only, weapons off", "controls")
+    loadouts = {kb: Loadout()}
+    r.draw_lobby(game, [kb], {kb: 1}, {}, loadouts, {kb: (0, 0)}, "cars", False,
+                 "RACE mode: laps only, powerups only", "controls cars", "controls garage")
     pygame.image.save(screen, str(out_dir / "render_pairing_racemode.png"))
     game.mode = "battle"
     kb2 = Keyboard(); kb2.name = "Xbox One S Controller"; kb2.short = "P1"
     kb2.color_index = 0; kb2.color = PLAYER_COLORS[0]
-    r.draw_pairing(game, [kb2, kb], {kb: 1, kb2: 0}, {kb2: cars[0]}, "P1 (Xbox One S Controller) drives X52", "controls line 1\ncontrols line 2")
+    loadouts = {kb2: Loadout(), kb: Loadout()}
+    r.draw_lobby(game, [kb2, kb], {kb: 1, kb2: 0}, {kb2: cars[0]}, loadouts,
+                 {kb2: (0, 0), kb: (1, 0)}, "cars", False,
+                 "P1 (Xbox One S Controller) drives X52", "controls cars", "controls garage")
     pygame.image.save(screen, str(out_dir / "render_pairing.png"))
+    r.draw_lobby(game, [kb2, kb], {kb: 1, kb2: 0}, {kb2: cars[0]}, loadouts,
+                 {kb2: (0, 1), kb: (0, 0)}, "garage", False,
+                 "", "controls cars", "controls garage")
+    pygame.image.save(screen, str(out_dir / "render_garage.png"))
+    r.draw_lobby(game, [kb2, kb], {kb: 1, kb2: 0}, {kb2: cars[0]}, loadouts,
+                 {kb2: (0, 1), kb: (0, 0)}, "cars", True,
+                 "", "controls cars", "controls garage")
+    pygame.image.save(screen, str(out_dir / "render_settings.png"))
     evidence = ScanEvidence()
     scanners = {c: TrackScanner(evidence, c.name) for c in cars}
     for i, scanner in enumerate(scanners.values()):
@@ -117,9 +137,8 @@ def main(out_dir: Path):
         scanner.commanded_speed = 450
     r.draw_scan(game, scanners, 17)
     pygame.image.save(screen, str(out_dir / "render_scan.png"))
-    r.draw_scores(game, 0, 0)
-    pygame.image.save(screen, str(out_dir / "render_scores.png"))
-    print("saved", out_dir / "render_race.png", out_dir / "render_pairing.png")
+    print("saved", out_dir / "render_race.png", out_dir / "render_pairing.png",
+          out_dir / "render_garage.png", out_dir / "render_settings.png")
     print("events:", [e[1] for e in game.events])
     print("battery:", [c.battery.summary() for c in cars])
 
