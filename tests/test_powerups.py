@@ -99,11 +99,31 @@ class PowerupTests(unittest.TestCase):
     def test_hook_out_of_range_does_not_attach(self):
         self.car.loadout.powerup = "hook"
         self.car.powerup_energy = 100.0
-        place(self.other, 4, 0.5, lane=-23, speed=600)
+        place(self.other, 5, 0.5, lane=-23, speed=600)
         self.assertGreater(self.game._hook_gap(self.car, self.other), HOOK_RANGE_MM)
         self.game.update_hook(self.car, True, self.now, 0.1)
         self.assertIsNone(self.car.hook_target)
         self.assertEqual(self.other.hooked_until, 0.0)
+
+    def test_hook_shows_front_light_without_a_target(self):
+        self.car.loadout.powerup = "hook"
+        self.car.powerup_energy = 100.0
+        place(self.other, 5, 0.5, lane=-23, speed=600)
+        self.game.update_hook(self.car, True, self.now, 0.1)
+        self.assertIsNone(self.car.hook_target)
+        self.assertTrue(self.car.hook_light_active)
+        self.game.update_hook(self.car, False, self.now + 0.1, 0.1)
+        self.assertFalse(self.car.hook_light_active)
+
+    def test_hook_reaches_beyond_the_old_range(self):
+        self.car.loadout.powerup = "hook"
+        self.car.powerup_energy = 100.0
+        place(self.other, 4, 0.5, lane=-23, speed=600)
+        gap = self.game._hook_gap(self.car, self.other)
+        self.assertGreater(gap, 1000.0)
+        self.assertLessEqual(gap, HOOK_RANGE_MM)
+        self.game.update_hook(self.car, True, self.now, 0.1)
+        self.assertIs(self.car.hook_target, self.other)
 
     def test_anchor_stops_and_costs_energy(self):
         self.car.loadout.powerup = "anchor"

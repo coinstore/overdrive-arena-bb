@@ -106,8 +106,8 @@ UTURN_FLIP_TIMEOUT_S = 2.6
 UTURN_REVERSE_SPEED = 500
 HOOK_MIN_ENERGY = 20.0
 HOOK_DRAIN = 20.0                # 100 % = 5 s
-HOOK_RANGE_MM = 1000.0
-HOOK_BREAK_MM = 1200.0
+HOOK_RANGE_MM = 2000.0
+HOOK_BREAK_MM = 2400.0
 HOOK_SLOW_FACTOR = 0.75
 HOOK_MIN_SPEED = 300.0
 ANCHOR_COST = 50.0
@@ -2616,11 +2616,14 @@ class Game:
             return
         if target is None or not self._hook_valid(owner, target, now):
             if target is not None:
-                self.release_hook(owner)
+                self.release_hook(owner, keep_light=True)
                 if owner.powerup_energy < HOOK_MIN_ENERGY:
+                    self.release_hook(owner)
                     return
             target = self.nearest_ahead(owner, now)
             if target is None:
+                # The beam is active even without a catch, so the front stays yellow.
+                owner.lights_hook_attacker(True)
                 return
             owner.hook_target = target
             self.log(f"{owner.name}: hook on {target.name}", owner.color)
@@ -2637,10 +2640,11 @@ class Game:
         if owner.powerup_energy <= 0:
             self.release_hook(owner)
 
-    def release_hook(self, owner: CarState) -> None:
+    def release_hook(self, owner: CarState, keep_light: bool = False) -> None:
         target = owner.hook_target
         owner.hook_target = None
-        owner.lights_hook_attacker(False)
+        if not keep_light:
+            owner.lights_hook_attacker(False)
         if target is not None and target.hooked_by is owner:
             target.hooked_by = None
             target.lights_unhook()

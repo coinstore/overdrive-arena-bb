@@ -195,9 +195,10 @@ traffic. A player already using the full 2000 command range needs no boost.
 - **U-turn** (hold A): starts at 50 % powerup energy. 100 energy drains in 3.5 s, so a full bar gives the
   full 3.5 s; 50 % gives 1.75 s. Releasing or running empty flips the car forward again. Reverse speed is
   capped at 500 mm/s and the weapon stays enabled. Lap progress is invalidated.
-- **Hook** (hold A): tethers the nearest car ahead in any lane within 1000 mm (breaks beyond 1200 mm).
+- **Hook** (hold A): tethers the nearest car ahead in any lane within 2000 mm (breaks beyond 2400 mm).
   The victim's commanded speed is reduced to 75 %, never below 300 mm/s. Full energy lasts 5 s. The
-  attacker gets yellow front lights; the victim gets a slow red tail pattern and a visible cable.
+  attacker gets yellow front lights whenever the beam is held, even without a target; the victim gets a
+  slow red tail pattern and a visible cable.
 - **Anchor** (press A): stops the car for 2.5 s and costs 50 powerup energy. The car remains vulnerable
   and can still fire. Useful to let an opponent pass, avoid a mine or block a lane briefly.
 - **Booster** (hold A): raises the target to 160 % of the personal limit, capped at 2000 mm/s. Full energy
