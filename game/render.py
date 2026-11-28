@@ -5,6 +5,7 @@ import math
 import random
 import time
 from collections import deque
+from pathlib import Path
 from typing import Optional
 
 import pygame
@@ -298,6 +299,17 @@ class Renderer:
         self.title = pygame.font.SysFont("segoeui,consolas", 30, bold=True)
         self.big = pygame.font.SysFont("segoeui,consolas", 22, bold=True)
         self.mono_big = pygame.font.SysFont("consolas", 22, bold=True)
+        font_dir = Path(__file__).resolve().parents[1] / "assets" / "fonts"
+        try:
+            self.pixel_small = pygame.font.Font(str(font_dir / "Silkscreen-Regular.ttf"), 10)
+            self.pixel = pygame.font.Font(str(font_dir / "Silkscreen-Regular.ttf"), 14)
+            self.pixel_big = pygame.font.Font(str(font_dir / "Silkscreen-Bold.ttf"), 18)
+            self.pixel_title = pygame.font.Font(str(font_dir / "Silkscreen-Bold.ttf"), 22)
+        except OSError:
+            self.pixel_small = pygame.font.SysFont("consolas", 11, bold=True)
+            self.pixel = pygame.font.SysFont("consolas", 15, bold=True)
+            self.pixel_big = pygame.font.SysFont("consolas", 19, bold=True)
+            self.pixel_title = pygame.font.SysFont("consolas", 24, bold=True)
         self.map_view: Optional[MapView] = None
         self.map_key: Optional[tuple] = None
         self.buttons: dict[str, pygame.Rect] = {}   # clickable areas of the current screen
@@ -313,6 +325,147 @@ class Renderer:
         f = font or self.font
         img = f.render(s, True, color)
         self.screen.blit(img, (right - img.get_width(), y))
+
+    # ---- pixel UI kit ----
+    def pixel_panel(self, rect: pygame.Rect, fill=PANEL, border=(58, 60, 72),
+                    shadow: int = 4, accent=None, radius: int = 2) -> None:
+        if shadow:
+            pygame.draw.rect(self.screen, (6, 7, 10),
+                             rect.move(shadow, shadow), border_radius=radius)
+        pygame.draw.rect(self.screen, fill, rect, border_radius=radius)
+        if accent is not None:
+            pygame.draw.rect(self.screen, accent, (rect.x, rect.y, rect.width, 6),
+                             border_top_left_radius=radius, border_top_right_radius=radius)
+        pygame.draw.rect(self.screen, border, rect, 2, border_radius=radius)
+
+    def pixel_button(self, key: str, x: int, y: int, w: int, h: int, label: str,
+                     hint: str, color, enabled: bool = True, font=None) -> pygame.Rect:
+        rect = pygame.Rect(x, y, w, h)
+        shadow = 4 if enabled else 3
+        pygame.draw.rect(self.screen, (6, 7, 10), rect.move(shadow, shadow), border_radius=8)
+        if enabled:
+            pygame.draw.rect(self.screen, color, rect, border_radius=8)
+            pygame.draw.rect(self.screen, (12, 13, 17), rect, 2, border_radius=8)
+            fg, sub = (16, 17, 22), (30, 32, 40)
+        else:
+            pygame.draw.rect(self.screen, (42, 44, 54), rect, border_radius=8)
+            pygame.draw.rect(self.screen, (64, 66, 78), rect, 2, border_radius=8)
+            fg = sub = FAINT
+        f = font or self.pixel_big
+        img = f.render(label, True, fg)
+        self.screen.blit(img, (x + 14, y + (h - img.get_height()) // 2))
+        if hint:
+            self.text_right(hint, x + w - 12, y + (h - 13) // 2, sub, self.small)
+        self.buttons[key] = rect
+        return rect
+
+    def step_tab(self, x: int, y: int, w: int, h: int, number: str, label: str,
+                 state: str) -> pygame.Rect:
+        rect = pygame.Rect(x, y, w, h)
+        if state == "active":
+            fill, border, fg = TEXT, (12, 13, 17), (16, 17, 22)
+        elif state == "done":
+            fill, border, fg = (52, 92, 72), (130, 220, 160), (200, 255, 220)
+        else:
+            fill, border, fg = CARD, (58, 60, 72), FAINT
+        pygame.draw.rect(self.screen, (6, 7, 10), rect.move(3, 3), border_radius=2)
+        pygame.draw.rect(self.screen, fill, rect, border_radius=2)
+        pygame.draw.rect(self.screen, border, rect, 2, border_radius=2)
+        self.text(number, (rect.x + 10, rect.y + 7), fg, self.pixel)
+        self.text(label, (rect.x + 30, rect.y + 7), fg, self.pixel)
+        if state == "done":
+            self.text("OK", (rect.right - 26, rect.y + 7), fg, self.pixel_small)
+        return rect
+
+    def pixel_tag(self, x: int, y: int, label: str, color) -> int:
+        img = self.small.render(label, True, (16, 17, 22))
+        w = img.get_width() + 10
+        pygame.draw.rect(self.screen, color, (x, y, w, 17), border_radius=2)
+        pygame.draw.rect(self.screen, (12, 13, 17), (x, y, w, 17), 1, border_radius=2)
+        self.screen.blit(img, (x + 5, y + 2))
+        return w
+
+    def pixel_tag_right(self, right: int, y: int, label: str, color) -> None:
+        w = self.small.size(label)[0] + 10
+        self.pixel_tag(right - w, y, label, color)
+
+    def pixel_check(self, cx: int, cy: int, color) -> None:
+        pygame.draw.lines(self.screen, color, False,
+                          [(cx - 5, cy), (cx - 1, cy + 5), (cx + 6, cy - 5)], 3)
+
+    def selection_brackets(self, rect: pygame.Rect, color) -> None:
+        arm = 9
+        for x, y, dx, dy in ((rect.x, rect.y, 1, 1), (rect.right, rect.y, -1, 1),
+                             (rect.x, rect.bottom, 1, -1), (rect.right, rect.bottom, -1, -1)):
+            pygame.draw.line(self.screen, color, (x, y), (x + dx * arm, y), 3)
+            pygame.draw.line(self.screen, color, (x, y), (x, y + dy * arm), 3)
+
+    def pixel_stat_bar(self, x: int, y: int, units: int, color, total: int = 5) -> int:
+        for i in range(total):
+            col = color if i < units else (48, 50, 62)
+            pygame.draw.rect(self.screen, col, (x + i * 9, y, 7, 5))
+            pygame.draw.rect(self.screen, (12, 13, 17), (x + i * 9, y, 7, 5), 1)
+        return total * 9
+
+    def draw_pixel_car(self, cx: int, cy: int, body, outline, scale: int = 4) -> None:
+        px = pygame.Surface((20, 10), pygame.SRCALPHA)
+        # chunky top-down car: player outline, body, cockpit, lights
+        pygame.draw.rect(px, outline, (1, 2, 18, 6))
+        pygame.draw.rect(px, body, (2, 3, 16, 4))
+        pygame.draw.rect(px, (24, 26, 34), (7, 3, 6, 4))
+        pygame.draw.rect(px, (42, 46, 58), (8, 4, 4, 2))
+        pygame.draw.rect(px, (12, 13, 17), (1, 2, 18, 6), 1)
+        pygame.draw.rect(px, (255, 250, 210), (18, 3, 1, 1))
+        pygame.draw.rect(px, (255, 250, 210), (18, 6, 1, 1))
+        pygame.draw.rect(px, (210, 60, 60), (1, 3, 1, 1))
+        pygame.draw.rect(px, (210, 60, 60), (1, 6, 1, 1))
+        img = pygame.transform.scale(px, (20 * scale, 10 * scale))
+        self.screen.blit(img, (cx - img.get_width() // 2, cy - img.get_height() // 2))
+
+    def draw_pixel_icon(self, kind: str, cx: int, cy: int, color, scale: int = 3) -> None:
+        px = pygame.Surface((8, 8), pygame.SRCALPHA)
+        if kind == "sniper":
+            pygame.draw.line(px, color, (1, 4), (6, 4))
+            pygame.draw.line(px, color, (4, 1), (4, 6))
+            pygame.draw.rect(px, color, (3, 3, 2, 2))
+        elif kind == "blaster":
+            pygame.draw.line(px, color, (1, 4), (5, 4))
+            pygame.draw.line(px, color, (1, 2), (3, 2))
+            pygame.draw.line(px, color, (1, 6), (3, 6))
+            pygame.draw.rect(px, color, (6, 3, 2, 2))
+        elif kind == "mine":
+            pygame.draw.circle(px, color, (4, 4), 2)
+            for dx, dy in ((0, -3), (0, 3), (-3, 0), (3, 0)):
+                pygame.draw.rect(px, color, (4 + dx, 4 + dy, 1, 1))
+        elif kind == "uturn":
+            pygame.draw.lines(px, color, False,
+                              [(6, 2), (2, 2), (2, 6), (5, 6)], 1)
+            pygame.draw.polygon(px, color, [(5, 6), (7, 5), (7, 7)])
+        elif kind == "hook":
+            pygame.draw.line(px, color, (1, 2), (5, 4))
+            pygame.draw.line(px, color, (5, 4), (2, 6))
+            pygame.draw.rect(px, color, (6, 5, 1, 2))
+        elif kind == "anchor":
+            pygame.draw.line(px, color, (4, 1), (4, 6))
+            pygame.draw.line(px, color, (2, 3), (6, 3))
+            pygame.draw.lines(px, color, False, [(2, 5), (4, 7), (6, 5)])
+        elif kind == "booster":
+            pygame.draw.polygon(px, color, [(6, 1), (2, 4), (4, 4), (3, 7), (7, 3), (5, 3)])
+        else:
+            pygame.draw.rect(px, color, (2, 2, 4, 4))
+        img = pygame.transform.scale(px, (8 * scale, 8 * scale))
+        self.screen.blit(img, (cx - img.get_width() // 2, cy - img.get_height() // 2))
+
+    def draw_menu_background(self) -> None:
+        self.frame()
+        w, h = self.screen.get_size()
+        for gx in range(0, w, 32):
+            pygame.draw.line(self.screen, BG_GRID, (gx, 0), (gx, h))
+        for gy in range(0, h, 32):
+            pygame.draw.line(self.screen, BG_GRID, (0, gy), (w, gy))
+        for gx in range(16, w, 32):
+            for gy in range(16, h, 32):
+                pygame.draw.rect(self.screen, (17, 18, 23), (gx, gy, 2, 2))
 
     def map_rect(self) -> pygame.Rect:
         w, h = self.screen.get_size()
@@ -336,22 +489,17 @@ class Renderer:
 
     def draw_no_track(self, msg: str) -> None:
         r = self.map_rect()
-        pygame.draw.rect(self.screen, PANEL, r, border_radius=10)
-        self.text("No track map yet", (r.x + 28, r.y + 28), DIM, self.title)
+        self.pixel_panel(r, PANEL, (58, 60, 72), shadow=0, radius=2)
+        self.text("NO TRACK MAP", (r.x + 28, r.y + 28), WARN, self.pixel_title)
         y = r.y + 80
         for line in msg.split("\n"):
             y += self.text(line, (r.x + 28, y), DIM) + 6
 
     def chip(self, x: int, y: int, label: str, color) -> int:
-        img = self.small.render(label, True, (18, 18, 22))
-        w = img.get_width() + 12
-        pygame.draw.rect(self.screen, color, (x, y, w, 18), border_radius=9)
-        self.screen.blit(img, (x + 6, y + 2))
-        return w
+        return self.pixel_tag(x, y, label, color)
 
     def chip_right(self, right: int, y: int, label: str, color) -> None:
-        w = self.small.size(label)[0] + 12
-        self.chip(right - w, y, label, color)
+        self.pixel_tag_right(right, y, label, color)
 
     def battery_row(self, c: CarState, x: int, y: int, w: int, detailed: bool = True) -> None:
         b = c.battery
@@ -412,49 +560,27 @@ class Renderer:
         for dy in (-W / 2 + 3 * scale, W / 2 - 3 * scale):
             pygame.draw.circle(self.screen, (255, 250, 210), (int(cx + L / 2), int(cy + dy)), int(2 * scale))
 
-    def token(self, x: int, y: int, source, color, filled: bool = True) -> int:
-        """Small player badge like [P1] / [KB]. Returns its width."""
-        img = self.small.render(source.short, True, (18, 18, 22) if filled else color)
+    def player_badge(self, x: int, y: int, source, color, h: int = 24) -> int:
+        img = self.pixel.render(source.short, True, (16, 17, 22))
         w = img.get_width() + 14
-        if filled:
-            pygame.draw.rect(self.screen, color, (x, y, w, 20), border_radius=6)
-        else:
-            pygame.draw.rect(self.screen, color, (x, y, w, 20), 2, border_radius=6)
-        self.screen.blit(img, (x + 7, y + 3))
+        pygame.draw.rect(self.screen, (6, 7, 10), (x + 2, y + 2, w, h), border_radius=2)
+        pygame.draw.rect(self.screen, color, (x, y, w, h), border_radius=2)
+        pygame.draw.rect(self.screen, (12, 13, 17), (x, y, w, h), 2, border_radius=2)
+        self.screen.blit(img, (x + 7, y + (h - img.get_height()) // 2))
         return w
 
-    def mini_button(self, key: str, x: int, y: int, w: int, h: int, label: str, hint: str,
-                    color, enabled: bool = True, fg=None, sub=None) -> pygame.Rect:
-        rect = pygame.Rect(x, y, w, h)
-        if enabled:
-            pygame.draw.rect(self.screen, color, rect, border_radius=8)
-            fg = fg if fg is not None else (18, 18, 22)
-            sub = sub if sub is not None else (30, 32, 40)
+    def token(self, x: int, y: int, source, color, filled: bool = True) -> int:
+        """Small pixel player badge like [P1] / [KB]. Returns its width."""
+        img = self.pixel_small.render(source.short, True, (16, 17, 22) if filled else color)
+        w = img.get_width() + 12
+        pygame.draw.rect(self.screen, (6, 7, 10), (x + 2, y + 2, w, 20), border_radius=2)
+        if filled:
+            pygame.draw.rect(self.screen, color, (x, y, w, 20), border_radius=2)
+            pygame.draw.rect(self.screen, (12, 13, 17), (x, y, w, 20), 2, border_radius=2)
         else:
-            pygame.draw.rect(self.screen, (40, 42, 50), rect, border_radius=8)
-            pygame.draw.rect(self.screen, (58, 60, 70), rect, 1, border_radius=8)
-            fg = sub = FAINT
-        img = self.font.render(label, True, fg)
-        self.screen.blit(img, (x + 10, y + 3))
-        if hint:
-            self.text_right(hint, x + w - 8, y + h - 17, sub, self.small)
-        self.buttons[key] = rect
-        return rect
-
-    def tab_button(self, key: str, x: int, y: int, w: int, h: int, label: str, active: bool) -> pygame.Rect:
-        rect = pygame.Rect(x, y, w, h)
-        if active:
-            pygame.draw.rect(self.screen, TEXT, rect, border_radius=8)
-            fg = (18, 18, 22)
-        else:
-            pygame.draw.rect(self.screen, CARD, rect, border_radius=8)
-            pygame.draw.rect(self.screen, (60, 62, 74), rect, 1, border_radius=8)
-            fg = DIM
-        img = self.font.render(label, True, fg)
-        self.screen.blit(img, (rect.centerx - img.get_width() // 2,
-                               rect.centery - img.get_height() // 2))
-        self.buttons[key] = rect
-        return rect
+            pygame.draw.rect(self.screen, color, (x, y, w, 20), 2, border_radius=2)
+        self.screen.blit(img, (x + 6, y + 4))
+        return w
 
     def lobby_status(self, c: CarState):
         st = c.track_status()
@@ -499,43 +625,35 @@ class Renderer:
         self.text("LIVES", (x, y), FAINT, self.small)
         for i in range(BATTLE_LIVES):
             col = color if i < lives else (55, 57, 68)
-            pygame.draw.circle(self.screen, col, (x + 48 + i * 11, y + 6), 4)
+            px = x + 48 + i * 11
+            pygame.draw.rect(self.screen, col, (px, y + 3, 7, 7))
+            pygame.draw.rect(self.screen, (12, 13, 17), (px, y + 3, 7, 7), 1)
         self.text(f"{lives}", (x + 48 + BATTLE_LIVES * 11 + 4, y), TEXT, self.small)
 
     def _draw_car_card(self, game: Game, c: CarState, box: pygame.Rect, owner, owner_color,
                        hovering: list, src_color: dict, now: float) -> None:
         claimed = owner is not None
-        pygame.draw.rect(self.screen, CARD_HI if claimed or hovering else CARD, box, border_radius=14)
+        self.pixel_panel(box, CARD_HI if claimed or hovering else CARD,
+                         owner_color if claimed else (58, 60, 72), shadow=4,
+                         accent=owner_color if claimed else (52, 54, 66))
         if claimed:
-            pygame.draw.rect(self.screen, owner_color, (box.x, box.y, box.width, 7),
-                             border_top_left_radius=14, border_top_right_radius=14)
-            pygame.draw.rect(self.screen, owner_color, box, 3, border_radius=14)
-        else:
-            pygame.draw.rect(self.screen, (55, 57, 68), (box.x, box.y, box.width, 7),
-                             border_top_left_radius=14, border_top_right_radius=14)
-            pygame.draw.rect(self.screen, (60, 62, 74), box, 1, border_radius=14)
-
-        if claimed:
-            img = self.font.render(owner.short, True, (18, 18, 22))
-            pw = img.get_width() + 18
-            pygame.draw.rect(self.screen, owner_color, (box.x + 14, box.y + 14, pw, 24), border_radius=8)
-            self.screen.blit(img, (box.x + 23, box.y + 18))
+            self.player_badge(box.x + 14, box.y + 14, owner, owner_color)
         elif game.ai_enabled and c.ai_pref:
             self.chip(box.x + 14, box.y + 14, f"AI · {c.ai_difficulty.title()}", (82, 86, 100))
         else:
             self.chip(box.x + 14, box.y + 14, "PARKED", FAINT)
 
         label, col = self.lobby_status(c)
-        self.chip_right(box.right - 12, box.y + 14, label, col)
+        self.chip_right(box.right - 12, box.y + 15, label, col)
 
-        self.draw_car_icon(box.centerx, box.y + (70 if box.height >= 200 else 36),
-                           c.body_color, 2.6, outline=c.color)
-        self.text(c.name, (box.x + 16, box.y + max(56, box.height - 84)), TEXT, self.big)
-        battery_y = box.y + max(78, box.height - 54)
+        self.draw_pixel_car(box.centerx, box.y + (72 if box.height >= 200 else 48),
+                            c.body_color, c.color, 5 if box.height >= 200 else 3)
+        self.text(c.name, (box.x + 16, box.y + max(66, box.height - 88)), TEXT, self.pixel_big)
+        battery_y = box.y + max(90, box.height - 54)
         self.battery_row(c, box.x + 16, battery_y, box.width - 32, detailed=True)
 
         if hovering:
-            pygame.draw.rect(self.screen, src_color[hovering[0]], box, 2, border_radius=14)
+            self.selection_brackets(box.inflate(8, 8), src_color[hovering[0]])
             tx = box.x
             for s in hovering:
                 tx += self.token(tx, box.y - 28, s, src_color[s]) + 6
@@ -550,45 +668,52 @@ class Renderer:
         width = (self.screen.get_width() - 56 - gap * (len(sources) - 1)) // len(sources)
         for i, s in enumerate(sources):
             box = pygame.Rect(28 + i * (width + gap), y, width, h)
-            pygame.draw.rect(self.screen, CARD, box, border_radius=10)
-            pygame.draw.rect(self.screen, src_color[s], (box.x, box.y, 6, box.height),
-                             border_top_left_radius=10, border_bottom_left_radius=10)
-            self.token(box.x + 14, box.y + 9, s, src_color[s])
+            self.pixel_panel(box, CARD, (58, 60, 72), shadow=3, accent=src_color[s], radius=2)
+            self.token(box.x + 14, box.y + 10, s, src_color[s])
             car = claims.get(s)
             if car is None:
-                self.text("choose a car", (box.x + 58, box.y + 7), FAINT, self.font)
-                self.text("A / Enter", (box.x + 58, box.y + 29), FAINT, self.small)
+                self.text("CHOOSE A CAR", (box.x + 58, box.y + 9), FAINT, self.pixel)
+                self.text("A / Enter", (box.x + 58, box.y + 30), FAINT, self.small)
             else:
-                self.text(car.name, (box.x + 58, box.y + 7), TEXT, self.font)
+                self.text(car.name, (box.x + 58, box.y + 9), TEXT, self.pixel)
                 st = car.track_status()
-                label = {"on track": "ready", "idle": "stopped", "off track": "off track",
-                         "charging": "charging", "link lost": "link lost"}.get(st, st)
+                label = {"on track": "READY", "idle": "STOPPED", "off track": "OFF TRACK",
+                         "charging": "CHARGING", "link lost": "LINK LOST"}.get(st, st.upper())
                 col = OK if st == "on track" else ((120, 200, 255) if st == "charging" else DIM)
-                self.text(label, (box.x + 58, box.y + 29), col, self.small)
+                self.text(label, (box.x + 58, box.y + 30), col, self.small)
 
     def _draw_garage_panel(self, game: Game, source, box: pygame.Rect, claims: dict,
                            loadouts: dict, cursor: tuple[int, int], src_color: dict, now: float) -> None:
         color = src_color[source]
         car = claims.get(source)
         loadout = loadouts.get(source, Loadout())
-        pygame.draw.rect(self.screen, PANEL, box, border_radius=14)
-        pygame.draw.rect(self.screen, color, box, 2, border_radius=14)
+        self.pixel_panel(box, PANEL, color, shadow=4, accent=color, radius=2)
         header_h = 34
         pygame.draw.rect(self.screen, color, (box.x, box.y, box.width, header_h),
-                         border_top_left_radius=14, border_top_right_radius=14)
-        title = f"{source.short}   {car.name if car else 'choose a car'}"
-        self.text(title, (box.x + 14, box.y + 7), (18, 18, 22), self.font)
+                         border_top_left_radius=2, border_top_right_radius=2)
+        title = f"{source.short}  {car.name if car else 'CHOOSE A CAR'}"
+        self.text(title, (box.x + 12, box.y + 8), (16, 17, 22), self.pixel)
 
         cy = box.y + header_h + 8
-        car_h = 52 if box.height >= 360 else 38
+        tall = box.height >= 400
+        car_h = 64 if tall else 40
         if car is not None:
-            self.draw_car_icon(box.x + 38, cy + 22, car.body_color, 1.9, outline=car.color)
-            self.text(car.name, (box.x + 72, cy), TEXT, self.font)
-            self.battery_row(car, box.x + 72, cy + 22, box.width - 88, detailed=True)
+            if tall:
+                self.draw_pixel_car(box.x + 46, cy + 28, car.body_color, car.color, 4)
+                text_x = box.x + 100
+                battery_x = box.x + 100
+                battery_w = box.width - 116
+            else:
+                self.draw_pixel_car(box.x + 34, cy + 20, car.body_color, car.color, 2)
+                text_x = box.x + 66
+                battery_x = box.x + 66
+                battery_w = box.width - 82
+            self.text(car.name, (text_x, cy), TEXT, self.pixel)
+            self.battery_row(car, battery_x, cy + 24, battery_w, detailed=True)
             label, col = self.lobby_status(car)
             self.chip_right(box.right - 14, cy, label, col)
         else:
-            self.text("choose a car in CARS", (box.x + 16, cy + 12), FAINT, self.small)
+            self.text("CHOOSE A CAR IN CARS", (box.x + 16, cy + 14), FAINT, self.small)
         y = cy + car_h
 
         sections = []
@@ -599,114 +724,145 @@ class Renderer:
         row %= len(sections)
         col %= len(sections[row][1])
         cursor = (row, col)
-        card_h = min(132, max(62, (box.height - 200) // 2))
+        icons = {"sniper": "sniper", "blaster": "blaster", "mine": "mine",
+                 "uturn": "uturn", "hook": "hook", "anchor": "anchor", "booster": "booster"}
+        names = {"sniper": "SNIPER", "blaster": "BLASTER", "mine": "MINE",
+                 "uturn": "U-TURN", "hook": "HOOK", "anchor": "ANCHOR", "booster": "BOOSTER"}
+        stats = {"sniper": "LONG SHOT", "blaster": "STRAIGHT SHOT", "mine": "LANE TRAP",
+                 "uturn": "180° TURN", "hook": "SLOW TARGET", "anchor": "FULL STOP",
+                 "booster": "SPEED BOOST"}
+        tile_h = 86 if box.height >= 400 else 54
+        compact = box.height < 400
         for row, (label, items, kind) in enumerate(sections):
-            self.text(label, (box.x + 16, y), FAINT, self.small)
-            y += 18
-            gap = 10
-            if len(items) == 1:
-                card_w = min(260, box.width - 32)
-            else:
-                card_w = (box.width - 32 - gap * (len(items) - 1)) // len(items)
+            self.text(label, (box.x + 16, y), FAINT, self.pixel_small)
+            y += 16
+            gap = 8
+            tile_w = (box.width - 32 - gap * (len(items) - 1)) // max(1, len(items))
             x = box.x + 16
             for col, item in enumerate(items):
-                card = pygame.Rect(x, y, card_w, card_h)
+                card = pygame.Rect(x, y, tile_w, tile_h)
                 selected = (loadout.weapon == item) if kind == "weapon" else (loadout.powerup == item)
                 hovered = cursor == (row, col)
-                pygame.draw.rect(self.screen, CARD_HI if selected else CARD, card, border_radius=8)
+                pygame.draw.rect(self.screen, (6, 7, 10), card.move(2, 2), border_radius=2)
+                pygame.draw.rect(self.screen, CARD_HI if selected else CARD, card, border_radius=2)
+                pygame.draw.rect(self.screen, color if selected else (58, 60, 72),
+                                 card, 3 if selected else 2, border_radius=2)
+                icon_scale = 2 if compact else 3
+                self.draw_pixel_icon(icons.get(item, "blaster"), card.centerx,
+                                     card.y + (16 if compact else 22), color, icon_scale)
+                name_font = self.pixel_small if compact or tile_w < 130 else self.pixel
+                name = names.get(item, item.upper())
+                img = name_font.render(name, True, TEXT)
+                while img.get_width() > card.width - 12 and len(name) > 3:
+                    name = name[:-2] + ".."
+                    img = name_font.render(name, True, TEXT)
+                self.screen.blit(img, (card.centerx - img.get_width() // 2,
+                                       card.y + (30 if compact else 46)))
+                if not compact and tile_w >= 120:
+                    desc = stats.get(item, "")
+                    dimg = self.small.render(desc, True, DIM)
+                    self.screen.blit(dimg, (card.centerx - dimg.get_width() // 2,
+                                            card.y + 64))
                 if selected:
-                    pygame.draw.rect(self.screen, color, card, 3, border_radius=8)
+                    self.pixel_check(card.right - 12, card.y + 12, color)
                 elif hovered:
-                    pygame.draw.rect(self.screen, TEXT, card, 2, border_radius=8)
-                else:
-                    pygame.draw.rect(self.screen, (58, 60, 70), card, 1, border_radius=8)
-                item_name = {"blaster": "BLASTER", "mine": "MINE", "uturn": "U-TURN"}.get(item, item.upper())
-                self.text(item_name, (card.x + 10, card.y + 8), TEXT, self.font)
-                stats = {"blaster": "20 dmg · 1.0 s", "mine": "35 dmg · 4.0 s",
-                         "uturn": "180° turn"}.get(item, "")
-                self.text(stats, (card.x + 10, card.y + 30), DIM, self.small)
-                if selected:
-                    pygame.draw.circle(self.screen, color, (card.right - 14, card.y + 14), 6)
-                elif hovered:
-                    pygame.draw.circle(self.screen, TEXT, (card.right - 14, card.y + 14), 6, 2)
-                x += card_w + gap
-            y += card_h + 10
+                    self.selection_brackets(card.inflate(6, 6), color)
+                x += tile_w + gap
+            y += tile_h + 10
+        if tall:
+            srect = pygame.Rect(box.x + 16, box.bottom - 82, box.width - 32, 66)
+            self.pixel_panel(srect, CARD, color, shadow=2, accent=color, radius=2)
+            self.text("LOADOUT", (srect.x + 10, srect.y + 6), FAINT, self.pixel_small)
+            half = srect.width // 2
+            self.draw_pixel_icon(icons.get(loadout.weapon, "blaster"),
+                                 srect.x + 30, srect.y + 40, color, 2)
+            self.text(loadout.weapon_name(), (srect.x + 50, srect.y + 24), TEXT, self.pixel)
+            self.text("X WEAPON", (srect.x + 50, srect.y + 44), FAINT, self.small)
+            self.draw_pixel_icon(icons.get(loadout.powerup, "uturn"),
+                                 srect.x + half + 22, srect.y + 40, color, 2)
+            self.text(loadout.powerup_name(), (srect.x + half + 42, srect.y + 24),
+                      TEXT, self.pixel)
+            self.text("A POWERUP", (srect.x + half + 42, srect.y + 44), FAINT, self.small)
 
     def _draw_settings_modal(self, game: Game) -> None:
         w, h = self.screen.get_size()
         shade = pygame.Surface((w, h), pygame.SRCALPHA)
-        shade.fill((0, 0, 0, 170))
+        shade.fill((0, 0, 0, 185))
         self.screen.blit(shade, (0, 0))
-        pw, ph = 480, 238
+        pw, ph = 500, 250
         x, y = (w - pw) // 2, (h - ph) // 2
         box = pygame.Rect(x, y, pw, ph)
-        pygame.draw.rect(self.screen, PANEL, box, border_radius=14)
-        pygame.draw.rect(self.screen, (70, 72, 86), box, 1, border_radius=14)
-        self.text("SETTINGS", (x + 22, y + 18), TEXT, self.big)
-        self.text("MAX SPEED", (x + 22, y + 70), FAINT, self.small)
-        self.text(f"{game.race_speed_limit} mm/s", (x + 22, y + 90), TEXT, self.font)
-        self.mini_button("max_down", x + pw - 138, y + 76, 48, 34, "-", "", (110, 112, 130), fg=TEXT)
-        self.mini_button("max_up", x + pw - 80, y + 76, 48, 34, "+", "", (110, 112, 130), fg=TEXT)
-        self.text("FAIR GAME", (x + 22, y + 132), FAINT, self.small)
-        self.mini_button("fair_toggle", x + pw - 138, y + 138, 106, 34,
-                         "ON" if game.fair_game else "OFF", "H",
-                         OK if game.fair_game else (70, 72, 84), fg=(18, 18, 22) if game.fair_game else TEXT)
-        self.text("R / R-stick: speed", (x + 22, y + 160), FAINT, self.small)
-        self.text("H / LT+R-stick: fair", (x + 22, y + 176), FAINT, self.small)
-        self.mini_button("settings_close", x + pw - 138, y + 190, 106, 34, "CLOSE", "Back",
-                         (110, 112, 130), fg=TEXT)
+        self.pixel_panel(box, PANEL, (120, 170, 255), shadow=6, accent=(120, 170, 255), radius=2)
+        self.text("SETTINGS", (x + 22, y + 18), TEXT, self.pixel_title)
+        self.text("MAX SPEED", (x + 22, y + 66), FAINT, self.pixel_small)
+        self.text(f"{game.race_speed_limit} mm/s", (x + 22, y + 88), TEXT, self.pixel)
+        self.pixel_button("max_down", x + pw - 142, y + 76, 48, 38, "-", "", (110, 112, 130),
+                          font=self.pixel)
+        self.pixel_button("max_up", x + pw - 84, y + 76, 48, 38, "+", "", (110, 112, 130),
+                          font=self.pixel)
+        self.text("FAIR GAME", (x + 22, y + 126), FAINT, self.pixel_small)
+        self.pixel_button("fair_toggle", x + pw - 142, y + 136, 106, 38,
+                          "ON" if game.fair_game else "OFF", "H",
+                          OK if game.fair_game else (70, 72, 84), font=self.pixel)
+        self.text("R / R-stick: speed", (x + 22, y + 168), FAINT, self.small)
+        self.text("H / LT+R-stick: fair", (x + 22, y + 186), FAINT, self.small)
+        self.pixel_button("settings_close", x + pw - 142, y + 196, 106, 38, "CLOSE", "Esc",
+                          (110, 112, 130), font=self.pixel)
 
     def draw_lobby(self, game: Game, sources: list, cursors: dict, claims: dict, loadouts: dict,
                    garage_cursors: dict, tab: str, settings_open: bool, status: str,
                    controls_cars: str, controls_garage: str) -> None:
-        self.frame()
+        self.draw_menu_background()
         self.buttons = {}
         W, H = self.screen.get_size()
         sources = [s for s in sources if s.alive()]
-        loaded = [s for s in sources if s in loadouts]
-        if len(loaded) < len(sources):
-            for s in sources:
-                loadouts.setdefault(s, Loadout())
+        for s in sources:
+            loadouts.setdefault(s, Loadout())
         palette = [(255, 214, 92), (120, 200, 255), (200, 150, 255), (140, 240, 170), (255, 160, 120)]
         src_color = {}
         for i, s in enumerate(sources):
             src_color[s] = getattr(s, "color", palette[i % len(palette)])
 
-        self.text("OVERDRIVE ARENA", (28, 12), TEXT, self.title)
-        self.mini_button("settings", W - 470, 16, 110, 36, "SETTINGS", "F2", (120, 170, 255))
+        self.text("OVERDRIVE ARENA", (28, 14), TEXT, self.pixel_title)
         track = game.track
-        track_rect = pygame.Rect(W - 350, 16, 180, 36)
-        pygame.draw.rect(self.screen, (26, 28, 35), track_rect, border_radius=8)
-        pygame.draw.rect(self.screen, (60, 62, 74), track_rect, 1, border_radius=8)
-        track_label = f"TRACK · {len(track)} pieces" if track else "NO TRACK"
-        self.text(track_label, (track_rect.x + 10, track_rect.y + 10), OK if track else WARN, self.small)
-        self.mini_button("scan", W - 160, 16, 132, 36, "SCAN", "Y / T", (120, 170, 255))
+        track_rect = pygame.Rect(W - 486, 16, 188, 44)
+        self.pixel_panel(track_rect, (26, 28, 35), OK if track else WARN, shadow=3,
+                         accent=OK if track else WARN, radius=2)
+        track_label = f"TRACK  {len(track):02d} PCS" if track else "NO TRACK"
+        self.text(track_label, (track_rect.x + 10, track_rect.y + 8), OK if track else WARN, self.pixel_small)
+        self.text("SCAN TO LOAD" if not track else "MAP READY", (track_rect.x + 10, track_rect.y + 24),
+                  DIM, self.small)
+        self.pixel_button("settings", W - 286, 16, 128, 44, "SETTINGS", "F2",
+                          (120, 170, 255), font=self.pixel)
+        self.pixel_button("scan", W - 146, 16, 118, 44, "SCAN", "Y / T",
+                          (120, 170, 255), font=self.pixel)
 
-        self.tab_button("tab_cars", 28, 60, 100, 36, "CARS", tab == "cars")
-        self.tab_button("tab_garage", 138, 60, 130, 36, "GARAGE", tab == "garage")
+        self.step_tab(28, 72, 142, 40, "1", "CARS", "active" if tab == "cars" else "done")
+        self.step_tab(180, 72, 166, 40, "2", "GARAGE", "active" if tab == "garage" else "todo")
         race_mode = game.mode == "race"
-        self.mini_button("mode", 290, 60, 132, 36, "RACE" if race_mode else "BATTLE", "M / L-stick",
-                         (200, 150, 255) if race_mode else (255, 150, 90))
+        self.pixel_button("mode", 366, 72, 154, 40, "RACE" if race_mode else "BATTLE",
+                          "M / L3", (200, 150, 255) if race_mode else (255, 150, 90),
+                          font=self.pixel)
         if race_mode:
-            self.mini_button("laps", 434, 60, 110, 36, f"{game.lap_target} LAPS", "Up/Down",
-                             (110, 112, 130), fg=TEXT)
+            self.pixel_button("laps", 530, 72, 140, 40, f"{game.lap_target} LAPS", "Up/Down",
+                              (110, 112, 130), font=self.pixel)
 
         now = time.monotonic()
+        race_ok = game.can_start(claims.values())
         if tab == "cars":
-            strip_h = 56
-            strip_y = H - 152
-            grid_top = 136
-            content_bottom = strip_y - 10
-            self.text("CHOOSE YOUR CAR", (28, 110), FAINT, self.small)
+            strip_y = H - 172
+            content_bottom = strip_y - 12
+            grid_top = 158
+            self.text("CHOOSE YOUR CAR", (28, 128), FAINT, self.pixel)
             n = len(game.cars)
             if n:
                 cols = 2 if n == 4 else (3 if n >= 3 else n)
                 rows = (n + cols - 1) // cols
-                gap = 16
+                gap = 18
                 avail_w = W - 56
                 avail_h = content_bottom - grid_top
                 card_w = min(300, (avail_w - gap * (cols - 1)) // cols)
-                card_h = min(220, (avail_h - gap * (rows - 1)) // rows)
+                card_h = min(230, (avail_h - gap * (rows - 1)) // rows)
                 card_h = max(120, card_h)
                 x0 = (W - (cols * card_w + gap * (cols - 1))) // 2
                 y0 = grid_top + max(0, (avail_h - rows * card_h - gap * (rows - 1)) // 2)
@@ -719,19 +875,20 @@ class Renderer:
                     self._draw_car_card(game, c, box, owner, src_color.get(owner, DIM),
                                         hovering, src_color, now)
             else:
-                self.text("No cars connected", (28, 180), WARN, self.big)
-            self._draw_player_strip(game, sources, claims, src_color, strip_y, strip_h)
+                self.text("NO CARS CONNECTED", (28, 190), WARN, self.pixel_big)
+            self._draw_player_strip(game, sources, claims, src_color, strip_y, 60)
             if status:
-                self.text(status[:120], (28, H - 88), WARN, self.small)
-            self.mini_button("quit", 28, H - 56, 112, 36, "QUIT", "Esc", (60, 62, 74), fg=TEXT, sub=DIM)
-            self.text(controls_cars, (152, H - 47), FAINT, self.small)
-            race_ok = game.can_start(claims.values())
-            self.button(W - 300, H - 58, 272, 40,
-                        "START RACE" if race_mode else "START BATTLE", "Start / Space",
-                        OK if race_ok else (60, 62, 74), enabled=race_ok)
+                self.text(status[:110], (28, H - 104), WARN, self.small)
+            self.pixel_button("quit", 28, H - 68, 140, 44, "QUIT", "Esc", (60, 62, 74),
+                              font=self.pixel)
+            self.text(controls_cars, (186, H - 55), FAINT, self.small)
+            self.pixel_button("next", W - 340, H - 74, 312, 52, "NEXT: GARAGE",
+                              "Start", (120, 170, 255) if race_ok else (60, 62, 74),
+                              enabled=race_ok)
         else:
-            self.text("GARAGE", (28, 110), FAINT, self.small)
-            content_bottom = H - 100
+            content_bottom = H - 120
+            self.text("GARAGE", (28, 128), FAINT, self.pixel)
+            self.text("CHOOSE ONE WEAPON AND ONE POWERUP", (120, 128), FAINT, self.small)
             n = len(sources)
             if n:
                 if n <= 1:
@@ -744,49 +901,50 @@ class Renderer:
                     cols, rows = 2, 2
                 else:
                     cols, rows = 3, 2
-                gap = 16
+                gap = 18
                 avail_w = W - 56
-                avail_h = content_bottom - 128
+                avail_h = content_bottom - 154
                 panel_w = (avail_w - gap * (cols - 1)) // cols
                 panel_h = (avail_h - gap * (rows - 1)) // rows
                 if n == 1:
-                    panel_w = min(760, avail_w)
+                    panel_w = min(820, avail_w)
                     x0 = (W - panel_w) // 2
                 else:
                     x0 = 28
-                y0 = 128
+                y0 = 154
                 for i, s in enumerate(sources):
                     box = pygame.Rect(x0 + (i % cols) * (panel_w + gap),
                                       y0 + (i // cols) * (panel_h + gap), panel_w, panel_h)
                     cursor = garage_cursors.get(s, (0, 0))
                     self._draw_garage_panel(game, s, box, claims, loadouts, cursor, src_color, now)
             else:
-                self.text("No controllers", (28, 180), WARN, self.big)
+                self.text("NO CONTROLLERS", (28, 190), WARN, self.pixel_big)
             if status:
-                self.text(status[:120], (28, H - 88), WARN, self.small)
-            self.mini_button("quit", 28, H - 56, 112, 36, "QUIT", "Esc", (60, 62, 74), fg=TEXT, sub=DIM)
-            self.text(controls_garage, (152, H - 47), FAINT, self.small)
-            race_ok = game.can_start(claims.values())
-            self.button(W - 300, H - 58, 272, 40,
-                        "START RACE" if race_mode else "START BATTLE", "Start / Space",
-                        OK if race_ok else (60, 62, 74), enabled=race_ok)
+                self.text(status[:110], (28, H - 104), WARN, self.small)
+            self.pixel_button("back", 28, H - 68, 240, 44, "BACK: CARS", "Esc / View",
+                              (70, 72, 84), font=self.pixel)
+            self.text(controls_garage, (286, H - 55), FAINT, self.small)
+            self.pixel_button("race", W - 340, H - 74, 312, 52,
+                              "START RACE" if race_mode else "START BATTLE",
+                              "Start", OK if race_ok else (60, 62, 74),
+                              enabled=race_ok)
 
         if settings_open:
             self._draw_settings_modal(game)
 
     def draw_scan(self, game: Game, scanners: dict, elapsed: float) -> None:
-        self.frame()
+        self.draw_menu_background()
         self.draw_scan_map(scanners)
         pr = self.panel_rect()
-        pygame.draw.rect(self.screen, PANEL, pr, border_radius=10)
+        self.pixel_panel(pr, PANEL, (58, 60, 72), shadow=0, radius=2)
         x, y = pr.x + 18, pr.y + 14
-        y += self.text("SCANNING TRACK", (x, y), TEXT, self.title) + 4
+        y += self.text("SCANNING TRACK", (x, y), TEXT, self.pixel_title) + 4
         y += self.text(f"shared map / all cars   ·   elapsed {elapsed:3.0f}s", (x, y), DIM, self.small) + 14
         for c, sc in scanners.items():
             box = pygame.Rect(x, y, pr.width - 36, 92)
-            pygame.draw.rect(self.screen, CARD, box, border_radius=10)
-            pygame.draw.rect(self.screen, c.color, (box.x, box.y, 7, box.height), border_top_left_radius=10, border_bottom_left_radius=10)
-            self.text(c.name, (box.x + 18, box.y + 8), TEXT, self.big)
+            self.pixel_panel(box, CARD, c.color, shadow=2, accent=c.color, radius=2)
+            pygame.draw.rect(self.screen, c.color, (box.x, box.y, 6, box.height))
+            self.text(c.name, (box.x + 18, box.y + 8), TEXT, self.pixel_big)
             with sc.lock:
                 state = sc.state
                 seen = sc.pieces_seen
@@ -814,7 +972,7 @@ class Renderer:
     def draw_scan_map(self, scanners: dict) -> None:
         from anki.track import build_track, piece_type, UNKNOWN
         rect = self.map_rect()
-        pygame.draw.rect(self.screen, PANEL, rect)
+        self.pixel_panel(rect, PANEL, (58, 60, 72), shadow=0, radius=2)
         evidence = next(iter(scanners.values())).evidence if scanners else None
         raw = evidence.preview() if evidence else []
         # Unknown geometry is explicitly a gap, never a guessed straight.
@@ -823,7 +981,7 @@ class Renderer:
             if row["id"] is None or piece_type(row["id"]) == UNKNOWN or (piece_type(row["id"]) == TURN and not row["turn"]):
                 break
             prefix.append(row)
-        self.text("LIVE TRACK RECONSTRUCTION", (rect.x + 18, rect.y + 16), TEXT, self.big)
+        self.text("LIVE TRACK RECONSTRUCTION", (rect.x + 18, rect.y + 16), TEXT, self.pixel_big)
         contributing = sum(sc.pieces_seen > 0 for sc in scanners.values())
         self.text(f"{len(raw)} pieces seen / {len(prefix)} placed / {contributing} cars reporting",
                   (rect.x + 18, rect.y + 48), DIM, self.small)
@@ -850,7 +1008,7 @@ class Renderer:
         for index, row in enumerate(raw[:max(1, (rect.width - 36) // width)]):
             box = pygame.Rect(rect.x + 18 + index * width, y + 24, width - 4, 28)
             known = row["id"] is not None and (piece_type(row["id"]) != TURN or row["turn"])
-            pygame.draw.rect(self.screen, (36, 55, 48) if known else (80, 55, 28), box, border_radius=4)
+            pygame.draw.rect(self.screen, (36, 55, 48) if known else (80, 55, 28), box, border_radius=2)
             label = str(row["id"]) + (row["turn"] or "") if known else "?"
             img = self.small.render(label, True, OK if known else WARN)
             self.screen.blit(img, (box.centerx - img.get_width() // 2, box.y + 6))
@@ -861,14 +1019,15 @@ class Renderer:
         mv = self.ensure_map(game.track)
         if mv:
             mv.draw(self.screen, game, self.font, self.small)
+            pygame.draw.rect(self.screen, (58, 60, 72), self.map_rect(), 2)
         else:
             self.draw_no_track("No map: weapons and positions are disabled.\nGo back (Esc / Back) and scan the track.")
         pr = self.panel_rect()
-        pygame.draw.rect(self.screen, PANEL, pr, border_radius=10)
+        self.pixel_panel(pr, PANEL, (58, 60, 72), shadow=0, radius=2)
         x, y = pr.x + 16, pr.y + 12
         now = time.monotonic()
         race_mode = game.mode == "race"
-        self.text("RACE" if race_mode else "BATTLE", (x, y), TEXT, self.title)
+        self.text("RACE" if race_mode else "BATTLE", (x, y), TEXT, self.pixel_title)
         if game.race_start_t:
             t = now - game.race_start_t
             self.text_right(f"{int(t // 60):02d}:{t % 60:05.2f}", pr.right - 16, y + 8, DIM, self.mono_big)
@@ -879,26 +1038,26 @@ class Renderer:
         for c in game.cars:
             box = pygame.Rect(x, y, pr.width - 32, h)
             dead = c.is_dead(now)
-            pygame.draw.rect(self.screen, CARD, box, border_radius=10)
-            pygame.draw.rect(self.screen, c.color, (box.x, box.y, 7, h),
-                             border_top_left_radius=10, border_bottom_left_radius=10)
-            pygame.draw.circle(self.screen, GOLD if ranks[c.index] == 1 else (70, 72, 84),
-                               (box.x + 30, box.y + 20), 12)
+            self.pixel_panel(box, CARD, c.color, shadow=2, accent=c.color, radius=2)
+            pygame.draw.rect(self.screen, c.color, (box.x, box.y, 6, h))
+            rank_col = GOLD if ranks[c.index] == 1 else (70, 72, 84)
+            pygame.draw.rect(self.screen, rank_col, (box.x + 18, box.y + 8, 24, 24))
+            pygame.draw.rect(self.screen, (12, 13, 17), (box.x + 18, box.y + 8, 24, 24), 2)
             img = self.small.render(str(ranks[c.index]), True,
                                     (18, 18, 22) if ranks[c.index] == 1 else TEXT)
-            self.screen.blit(img, (box.x + 30 - img.get_width() // 2, box.y + 13))
-            self.text(c.name, (box.x + 50, box.y + 3), (120, 120, 126) if dead else TEXT, self.big)
+            self.screen.blit(img, (box.x + 30 - img.get_width() // 2, box.y + 14))
+            self.text(c.name, (box.x + 50, box.y + 3), (120, 120, 126) if dead else TEXT, self.pixel_big)
             driver = c.source.short if c.source is not None else (
                 f"AI · {c.ai_difficulty.title()}" if c.ai else "PARKED")
-            self.text(driver, (box.x + 50, box.y + 26), DIM, self.small)
+            self.text(driver, (box.x + 50, box.y + 27), DIM, self.small)
             status = self.car_status(game, c, now)
             if status:
-                self.chip(box.x + 50 + self.small.size(driver)[0] + 10, box.y + 25,
+                self.chip(box.x + 50 + self.small.size(driver)[0] + 10, box.y + 27,
                           status[0], status[1])
-            bx, by, bw = box.x + 20, box.y + 44, box.width - 40
+            bx, by, bw = box.x + 20, box.y + 46, box.width - 40
             if race_mode:
-                self.text_right(f"LAP {c.laps} / {game.lap_target}", box.right - 18, box.y + 4,
-                                TEXT, self.big)
+                self.text_right(f"LAP {c.laps} / {game.lap_target}", box.right - 18, box.y + 3,
+                                TEXT, self.pixel_big)
                 prog = c.loc.progress() if c.localized() and c.loc else None
                 pieces = len(game.track.pieces) if game.track else 1
                 frac = min(1.0, (c.laps + ((prog or 0.0) / pieces if prog is not None else 0.0))
@@ -920,8 +1079,9 @@ class Renderer:
             y += self.text(line, (x, y), FAINT, self.small) + 1
         if overlay:
             mr = self.map_rect()
-            big = pygame.font.SysFont("segoeui,consolas", 96 if len(overlay) <= 3 else 44, bold=True)
-            img = big.render(overlay, True, TEXT)
+            base = self.pixel_title.render(overlay, True, TEXT)
+            factor = 3 if len(overlay) <= 6 else 2
+            img = pygame.transform.scale(base, (base.get_width() * factor, base.get_height() * factor))
             simg = self.font.render(sub, True, DIM) if sub else None
             content_w = max(img.get_width(), simg.get_width() if simg else 0)
             content_h = img.get_height() + (simg.get_height() + 12 if simg else 0)
@@ -935,24 +1095,10 @@ class Renderer:
                 self.screen.blit(simg, (mr.centerx - simg.get_width() // 2,
                                         ty + img.get_height() + 6))
 
-    def button(self, x: int, y: int, w: int, h: int, label: str, hint: str, color, enabled: bool = True) -> pygame.Rect:
-        rect = pygame.Rect(x, y, w, h)
-        if enabled:
-            pygame.draw.rect(self.screen, color, rect, border_radius=10)
-            fg, sub = (18, 18, 22), (30, 32, 40)
-        else:
-            pygame.draw.rect(self.screen, (44, 46, 56), rect, border_radius=10)
-            pygame.draw.rect(self.screen, (60, 62, 74), rect, 2, border_radius=10)
-            fg, sub = FAINT, FAINT
-        stacked = self.big.size(label)[0] + self.small.size(hint)[0] + 44 > w
-        self.text(label, (x + 16, y + (2 if stacked else 8)), fg, self.big)
-        self.text_right(hint, x + w - 14, y + (29 if stacked else 16), sub, self.small)
-        return rect
-
     def draw_message(self, title: str, lines: list[str]) -> None:
         self.frame()
         w, h = self.screen.get_size()
-        self.text(title, (40, h // 2 - 60), TEXT, self.title)
+        self.text(title, (40, h // 2 - 60), TEXT, self.pixel_title)
         y = h // 2 - 10
         for l in lines:
             y += self.text(l, (40, y), DIM) + 4

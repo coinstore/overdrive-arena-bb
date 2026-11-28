@@ -17,14 +17,14 @@ AXIS_MAX = 32767.0
 # edge-triggered actions
 (STOP, UTURN, FIRE, LANE_LEFT, LANE_RIGHT, LIMIT_UP, LIMIT_DOWN,
  MENU_LEFT, MENU_RIGHT, MENU_UP, MENU_DOWN, SELECT, RELEASE, TOGGLE_AI, READY, BACK, SCAN,
- TOGGLE_MODE, SECONDARY, BOOST, FAIR_GAME, TAB_LEFT, TAB_RIGHT, SETTINGS) = range(24)
+ TOGGLE_MODE, SECONDARY, BOOST, FAIR_GAME, SETTINGS) = range(22)
 
 ACTION_NAMES = {STOP: "stop", UTURN: "u-turn", FIRE: "fire", LANE_LEFT: "lane left",
                 LANE_RIGHT: "lane right", LIMIT_UP: "limit +", LIMIT_DOWN: "limit -", MENU_LEFT: "menu left",
                 MENU_RIGHT: "menu right", MENU_UP: "menu up", MENU_DOWN: "menu down", SELECT: "select",
                 RELEASE: "release", TOGGLE_AI: "AI/parked", READY: "ready", BACK: "back", SCAN: "scan track",
                 TOGGLE_MODE: "battle/race mode", SECONDARY: "speed/fair (lobby)", BOOST: "straight boost",
-                TAB_LEFT: "tab left", TAB_RIGHT: "tab right", SETTINGS: "settings"}
+                SETTINGS: "settings"}
 
 
 class InputSource:
@@ -56,8 +56,6 @@ class Pad(InputSource):
         MENU_RIGHT: (pygame.CONTROLLER_BUTTON_DPAD_RIGHT,),
         MENU_UP: (pygame.CONTROLLER_BUTTON_DPAD_UP,),
         MENU_DOWN: (pygame.CONTROLLER_BUTTON_DPAD_DOWN,),
-        TAB_LEFT: (pygame.CONTROLLER_BUTTON_LEFTSHOULDER,),
-        TAB_RIGHT: (pygame.CONTROLLER_BUTTON_RIGHTSHOULDER,),
         SELECT: (pygame.CONTROLLER_BUTTON_A,),
         RELEASE: (pygame.CONTROLLER_BUTTON_B,),
         TOGGLE_AI: (pygame.CONTROLLER_BUTTON_X,),
@@ -156,7 +154,6 @@ class Keyboard(InputSource):
         LIMIT_DOWN: (pygame.K_MINUS, pygame.K_KP_MINUS, pygame.K_PAGEDOWN, pygame.K_DOWN),
         MENU_LEFT: (pygame.K_LEFT, pygame.K_a), MENU_RIGHT: (pygame.K_RIGHT, pygame.K_d),
         MENU_UP: (pygame.K_UP,), MENU_DOWN: (pygame.K_DOWN,),
-        TAB_LEFT: (pygame.K_q,), TAB_RIGHT: (pygame.K_e,),
         SELECT: (pygame.K_RETURN, pygame.K_KP_ENTER), RELEASE: (pygame.K_BACKSPACE,), TOGGLE_AI: (pygame.K_TAB,),
         READY: (pygame.K_SPACE,),
         SECONDARY: (pygame.K_r,),

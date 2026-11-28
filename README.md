@@ -52,8 +52,9 @@ cars directly, with the protocol verified on real hardware (firmware 11866) and 
   outside it is corrected to the nearest zone edge. Transition bars remain exact anchors.
 - **Two modes**: BATTLE (one weapon + one powerup per player, 5 lives, last car wins) or RACE
   (laps only, powerups only, first to N laps wins).
-- **Lobby and garage**: a shared car-selection tab with clear player-coloured ownership, plus a garage
-  tab where every player configures their own weapon and powerup at the same time.
+- **Lobby and garage**: a two-step setup wizard. Step 1 chooses cars with clear player-coloured
+  ownership; step 2 gives every player their own panel to configure a weapon and powerup at the same
+  time. A chunky pixel-style UI with Silkscreen headings replaces the old dense tables.
 - **AI drivers** with per-car Easy, Normal, Hard, and Extreme levels, including AI-only races. They brake before curves and accelerate on straights.
 - **Battery and charger tracking**: voltage, estimated %, sag under load (finds tired cells), CHARGING /
   CHARGED when a car sits on its pad, CSV history.
@@ -78,22 +79,27 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
 ## How to play
 
 1. **Connect**: every advertising car is connected (limit with `--max-cars N` or `--car <address>`).
-2. **Lobby**: the `CARS` tab shows one card per car with a clear player-coloured owner badge (`P1`,
-   `P2`, `KB`), **AI** or **PARKED**. Every controller and the keyboard has its own cursor badge.
+2. **CARS**: one card per car with a clear player-coloured owner badge (`P1`, `P2`, `KB`), **AI** or
+   **PARKED**. Every controller and the keyboard has its own cursor badge.
    - Move the cursor: D-pad / left stick (keyboard: Left/Right). The car under a cursor blinks its headlights.
    - **A** (Enter): take the car you are hovering. Press again, or **B** (Backspace), to release it.
    - **X** (Tab): cycle an unclaimed car through Easy / Normal / Hard / Extreme / Parked (default: Normal).
    - **SCAN TRACK** (Y / T / click): cars combine compatible readings to reconstruct the circuit together.
      Watch the new map grow during scanning. Cars with no codes for 8 s, or lost codes for 3.5 s, stop
      independently; other cars continue. Only a complete closed loop replaces the saved map.
-   - **GARAGE** (LB/RB, Q/E or click): each player gets their own panel and configures a weapon and a
-     powerup at the same time. Battle shows `WEAPON` + `POWERUP`; Race shows `POWERUP` only.
    - **SETTINGS** (gear / F2 / LT + left-stick click): shared speed ceiling and Fair Game.
    - **BATTLE / RACE** (M / left-stick click / click) picks the mode; **D-pad up/down** or the **laps**
-     button selects 3 / 5 / 10 / 20 laps in the `CARS` tab.
-   - **RACE** (Start / Options / Space / click): enabled with at least one connected player or AI car off
-     its charger. Leave all cars unclaimed for an AI-only race.
-3. **Starting grid**: each participant drives to the start line in its own lane (turning around first if it
+     button selects 3 / 5 / 10 / 20 laps.
+   - **NEXT: GARAGE** (Start / Options / Space / click): enabled with at least one connected player or AI
+     car off its charger. This does not start the race yet.
+3. **GARAGE**: every player gets their own panel and configures a weapon and powerup at the same time.
+   Battle shows `WEAPON` + `POWERUP`; Race shows `POWERUP` only.
+   - **A / Enter**: equip the hovered item.
+   - **D-pad up/down**: switch between weapon and powerup.
+   - **D-pad left/right**: choose an item.
+   - **Back / Esc / View**: return to CARS.
+   - **START BATTLE / RACE** (Start / Options / Space / click): starts the race.
+4. **Starting grid**: each participant drives to the start line in its own lane (turning around first if it
    faces the wrong way), crawls the last piece at 300 mm/s and asks the car's firmware to brake itself on
    the start-line bar. Because the car stops on the shared bar event, every car lines up at the same
    physical point without the Bluetooth round-trip. Cars that overshoot the bar do a full lap at 500 mm/s
@@ -103,7 +109,7 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
    Once the field is on the line, press **Start / Options / Space** again to begin the 3-2-1-GO countdown.
    At GO every participant receives a 400 mm/s launch target, so cars move immediately; throttle still
    raises the player's held speed afterwards.
-4. **Race**. **Back** (Esc) stops everything and returns to the lobby. **F11** toggles fullscreen.
+5. **Race**. **Back** (Esc) stops everything and returns to the lobby. **F11** toggles fullscreen.
    After a finish, **Start / Options** starts another grid and countdown with the same selections.
    Put an off-track car back on the track and nudge it; it resumes automatically as soon as it reads a
    track transition. No recovery button or key press is needed. Recovery invalidates the current lap.
@@ -137,9 +143,10 @@ shows the engine state directly.
 | Straight boost      | Left stick click | L3           | Left Shift        |
 | Emergency stop      | B               | Circle        | Space             |
 | Speed limit +/- 100 | D-pad up/down   | D-pad up/down | + / -             |
-| Menu tabs           | LB / RB         | L1 / R1       | Q / E             |
+| Next / start        | Start / Options | Options       | Space             |
 | Settings            | LT + Left stick click | L2 + L3 | F2                |
 | Back / quit         | View            | Share         | Esc               |
+| Garage -> CARS      | View            | Share         | Esc               |
 
 ### Speed and boost
 
@@ -169,7 +176,7 @@ traffic. A player already using the full 2000 command range needs no boost.
 
 ### Battle weapons and lives
 
-- In the `GARAGE` tab every player equips **one weapon** and **one powerup** at the same time as
+- In the `GARAGE` step every player equips **one weapon** and **one powerup** at the same time as
   everyone else. The default is Blaster + U-turn; Mine is the other weapon choice.
 - **Blaster** (1 s cooldown): fires straight from the car's nose in its current heading, as far as the
   track surface continues. Only the nearest car whose body lies on that line is hit; other lanes and cars
@@ -308,7 +315,8 @@ pad: `CHARGING`, then `CHARGED`. Every reading goes to `battery_log.csv`.
 ## Repository layout
 
 ```
-app.py              state machine: connect -> lobby -> scan -> grid -> ready -> countdown -> race
+app.py              state machine: connect -> cars -> garage -> scan -> grid -> ready -> countdown -> race
+assets/fonts/       Silkscreen pixel font + SIL Open Font License
 anki/protocol.py    message encoders / decoders (verified byte layouts)
 anki/vehicle.py     one car over BLE: discover, connect, reconnect, notifications
 anki/ble_worker.py  BLE on its own thread (pygame's COM apartment breaks bleak on the main thread)

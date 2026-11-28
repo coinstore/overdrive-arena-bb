@@ -975,6 +975,10 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.app.game.lap_target, 10)
         self.press(I.READY)
         self.app.pairing_tick()
+        self.assertEqual(self.app.setup_tab, "garage")
+        self.assertEqual(self.app.state, PAIRING)
+        self.press(I.READY)
+        self.app.pairing_tick()
         self.assertEqual(self.app.state, GRID)
         self.assertIs(self.app.cars[0].source, self.pad)
         self.app.game.begin_grid.assert_called_once()
@@ -1006,8 +1010,8 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.app.state, COUNTDOWN)
         self.app.game.begin_countdown.assert_called_once()
 
-    def test_tab_switch_and_garage_equip(self):
-        self.press(I.TAB_RIGHT)
+    def test_next_step_and_garage_equip(self):
+        self.press(I.READY)
         self.app.pairing_tick()
         self.assertEqual(self.app.setup_tab, "garage")
 
@@ -1015,6 +1019,13 @@ class ControllerTests(unittest.TestCase):
         self.press(I.SELECT)
         self.app.pairing_tick()
         self.assertEqual(self.app.loadouts[self.pad].weapon, "mine")
+
+    def test_back_from_garage_returns_to_cars(self):
+        self.app.setup_tab = "garage"
+        self.press(I.BACK)
+        self.app.pairing_tick()
+        self.assertEqual(self.app.setup_tab, "cars")
+        self.assertEqual(self.app.state, PAIRING)
 
     def test_settings_modal_toggles_fair_and_closes_with_back(self):
         self.press(I.SETTINGS)
@@ -1032,6 +1043,9 @@ class ControllerTests(unittest.TestCase):
     def test_start_race_assigns_the_players_loadout(self):
         self.app.claims[self.pad] = self.app.cars[0]
         self.app.loadouts[self.pad].weapon = "mine"
+        self.press(I.READY)
+        self.app.pairing_tick()
+        self.assertEqual(self.app.setup_tab, "garage")
         self.press(I.READY)
         self.app.pairing_tick()
         self.assertEqual(self.app.state, GRID)

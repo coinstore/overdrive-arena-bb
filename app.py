@@ -10,8 +10,8 @@ Gamepad (Xbox names; PS5: Cross=A, Circle=B, Square=X, Triangle=Y, Share=Back, O
   LB / RB, D-pad L/R  snap one lane
   X                   use weapon                A              powerup (U-turn)
   B                   emergency stop            Y              unused in a race
-  Start               start / ready             Back           back / quit
-  LB / RB             switch CARS / GARAGE       LT + L-stick   settings (lobby)
+  Start               next / start              Back           back / quit
+  Back / View         garage -> cars            LT + L-stick   settings (lobby)
 
 Keyboard:  W/S accelerate/decelerate (holds)  A/D steer  Q/E lane  F weapon  U powerup  Space stop
            +/- limit   Enter claim/equip   Tab AI/park   T scan track   Esc back/quit
@@ -50,8 +50,8 @@ SCAN_NO_DATA_S = 8.0
 
 PAIRING, SCANNING, GRID, READY, COUNTDOWN, RACE = "pairing", "scanning", "grid", "ready", "countdown", "race"
 
-CONTROLS_CARS = "A/Enter choose · B release · X/Tab AI · Y/T scan · LB/RB tab"
-CONTROLS_GARAGE = "A/Enter equip · Up/Down slot · Left/Right item · LB/RB tab"
+CONTROLS_CARS = "A/Enter choose · B release · X/Tab AI · Y/T scan"
+CONTROLS_GARAGE = "A/Enter equip · Up/Down slot · Left/Right item"
 CONTROLS_RACE = ("pad: R2 gas · L2 brake · stick lanes\n"
                  "X weapon · A powerup · B stop\n"
                  "key: W/S · A/D · Q/E · F/U · Space · Esc")
@@ -250,6 +250,19 @@ class App:
         assert g is not None
         g.fair_game = not g.fair_game
 
+    def next_step(self) -> None:
+        g = self.game
+        assert g is not None
+        if not g.can_start(self.claims.values()):
+            self.status = "assign a player or AI to a connected car off its charger"
+            return
+        self.setup_tab = "garage"
+        self.status = "choose one weapon and one powerup"
+
+    def back_step(self) -> None:
+        self.setup_tab = "cars"
+        self.status = "choose a car"
+
     def handle_setup_click(self, pos: tuple[int, int]) -> Optional[bool]:
         g = self.game
         assert g is not None
@@ -266,14 +279,18 @@ class App:
             return None
         if "settings" in btns and btns["settings"].collidepoint(pos):
             self.open_settings()
-        elif "tab_cars" in btns and btns["tab_cars"].collidepoint(pos):
-            self.setup_tab = "cars"
-        elif "tab_garage" in btns and btns["tab_garage"].collidepoint(pos):
-            self.setup_tab = "garage"
         elif "scan" in btns and btns["scan"].collidepoint(pos):
             self.start_scan_all()
             return True
-        elif "race" in btns and btns["race"].collidepoint(pos):
+        elif self.setup_tab == "cars" and "next" in btns and btns["next"].collidepoint(pos):
+            self.next_step()
+            return True
+        elif self.setup_tab == "cars" and "quit" in btns and btns["quit"].collidepoint(pos):
+            return False
+        elif self.setup_tab == "garage" and "back" in btns and btns["back"].collidepoint(pos):
+            self.back_step()
+            return True
+        elif self.setup_tab == "garage" and "race" in btns and btns["race"].collidepoint(pos):
             if g.can_start(self.claims.values()):
                 self.start_race()
                 return True
@@ -283,8 +300,6 @@ class App:
         elif "laps" in btns and btns["laps"].collidepoint(pos):
             i = self.lap_choices.index(g.lap_target) if g.lap_target in self.lap_choices else -1
             g.lap_target = self.lap_choices[(i + 1) % len(self.lap_choices)]
-        elif "quit" in btns and btns["quit"].collidepoint(pos):
-            return False
         return None
 
     def pairing_tick(self) -> bool:
@@ -314,8 +329,7 @@ class App:
 
         if any(s.pressed(I.BACK) for s in sources):
             if self.setup_tab == "garage":
-                self.setup_tab = "cars"
-                self.status = "back to car selection"
+                self.back_step()
                 return True
             return False
         if any(s.pressed(I.SETTINGS) for s in sources):
@@ -324,11 +338,10 @@ class App:
         if any(s.pressed(I.SCAN) for s in sources):
             self.start_scan_all()
             return True
-        if any(s.pressed(I.TAB_LEFT) or s.pressed(I.TAB_RIGHT) for s in sources):
-            self.setup_tab = "garage" if self.setup_tab == "cars" else "cars"
-            return True
         if any(s.pressed(I.READY) for s in sources):
-            if not g.can_start(self.claims.values()):
+            if self.setup_tab == "cars":
+                self.next_step()
+            elif not g.can_start(self.claims.values()):
                 self.status = "assign a player or AI to a connected car off its charger"
             else:
                 self.start_race()
