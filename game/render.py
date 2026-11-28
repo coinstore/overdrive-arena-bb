@@ -16,6 +16,15 @@ from .game import (MAX_HP, BATTLE_LIVES, POWERUPS, WEAPONS, Game, CarState, Load
 
 BG = (14, 15, 19)
 BG_GRID = (22, 23, 29)
+BG_WALL = (17, 19, 24)
+BG_WALL_ALT = (20, 22, 28)
+BG_FLOOR = (12, 13, 17)
+WALL_LINE = (29, 31, 39)
+FLOOR_LINE = (24, 26, 33)
+METAL = (58, 60, 72)
+METAL_LIGHT = (92, 96, 112)
+HAZARD = (118, 88, 32)
+HAZARD_DARK = (52, 46, 28)
 PANEL = (24, 25, 31)
 CARD = (32, 34, 42)
 CARD_HI = (40, 42, 52)
@@ -312,6 +321,8 @@ class Renderer:
             self.pixel_title = pygame.font.SysFont("consolas", 24, bold=True)
         self.map_view: Optional[MapView] = None
         self.map_key: Optional[tuple] = None
+        self._menu_bg: Optional[pygame.Surface] = None
+        self._menu_bg_key: Optional[tuple] = None
         self.buttons: dict[str, pygame.Rect] = {}   # clickable areas of the current screen
 
     # ---- helpers ----
@@ -337,6 +348,45 @@ class Renderer:
             pygame.draw.rect(self.screen, accent, (rect.x, rect.y, rect.width, 6),
                              border_top_left_radius=radius, border_top_right_radius=radius)
         pygame.draw.rect(self.screen, border, rect, 2, border_radius=radius)
+
+    def machine_panel(self, rect: pygame.Rect, fill=PANEL, accent=(120, 170, 255),
+                      border=(58, 60, 72), shadow: int = 4) -> None:
+        self.pixel_panel(rect, fill, border, shadow=shadow, accent=accent, radius=2)
+        pygame.draw.line(self.screen, (32, 34, 42), (rect.x + 3, rect.y + rect.height - 3),
+                         (rect.right - 3, rect.y + rect.height - 3), 1)
+        for bx, by in ((rect.x + 7, rect.y + 7), (rect.right - 10, rect.y + 7),
+                       (rect.x + 7, rect.bottom - 10), (rect.right - 10, rect.bottom - 10)):
+            pygame.draw.rect(self.screen, (8, 9, 12), (bx + 1, by + 1, 4, 4))
+            pygame.draw.rect(self.screen, (92, 96, 112), (bx, by, 4, 4))
+            pygame.draw.rect(self.screen, (36, 38, 48), (bx + 1, by + 1, 2, 2))
+
+    def draw_lift(self, x: int, y: int, w: int, h: int = 8) -> None:
+        pygame.draw.rect(self.screen, (8, 9, 12), (x + 2, y + 2, w, h))
+        pygame.draw.rect(self.screen, (34, 36, 44), (x, y, w, h))
+        pygame.draw.rect(self.screen, (12, 13, 17), (x, y, w, h), 2)
+        block = 8
+        for i, sx in enumerate(range(x + 3, x + w - 3, block)):
+            col = HAZARD if i % 2 == 0 else HAZARD_DARK
+            pygame.draw.rect(self.screen, col, (sx, y + 2, min(block - 2, x + w - 3 - sx), h - 4))
+
+    def draw_pegboard(self, rect: pygame.Rect) -> None:
+        pygame.draw.rect(self.screen, (18, 20, 26), rect)
+        pygame.draw.rect(self.screen, (38, 41, 52), rect, 1)
+        for px in range(rect.x + 6, rect.right - 4, 8):
+            for py in range(rect.y + 6, rect.bottom - 4, 8):
+                pygame.draw.rect(self.screen, (34, 37, 47), (px, py, 1, 1))
+
+    def ready_lamp_right(self, right: int, y: int, c: CarState) -> None:
+        label, col = self.lobby_status(c)
+        tw = self.small.size(label)[0]
+        x = right - 12 - tw - 16
+        pulse = 0.5 + 0.5 * math.sin(time.monotonic() * 3.0)
+        pygame.draw.rect(self.screen, (8, 9, 12), (x + 1, y + 1, 10, 10))
+        pygame.draw.rect(self.screen, col, (x, y, 10, 10))
+        pygame.draw.rect(self.screen, (12, 13, 17), (x, y, 10, 10), 1)
+        hi = tuple(min(255, int(v * (0.65 + 0.35 * pulse))) for v in col)
+        pygame.draw.rect(self.screen, hi, (x + 2, y + 2, 3, 3))
+        self.text(label, (x + 16, y), col, self.small)
 
     def pixel_button(self, key: str, x: int, y: int, w: int, h: int, label: str,
                      hint: str, color, enabled: bool = True, font=None) -> pygame.Rect:
@@ -536,16 +586,124 @@ class Renderer:
         img = pygame.transform.scale(px, (12 * scale, 12 * scale))
         self.screen.blit(img, (cx - img.get_width() // 2, cy - img.get_height() // 2))
 
+    def _draw_tire_stack(self, x: int, y: int) -> None:
+        for i in range(3):
+            tire = pygame.Rect(x, y + i * 11, 34, 13)
+            pygame.draw.rect(self.screen, (8, 9, 12), tire.move(2, 2))
+            pygame.draw.rect(self.screen, (25, 27, 33), tire)
+            pygame.draw.rect(self.screen, (12, 13, 17), tire, 2)
+            pygame.draw.rect(self.screen, (52, 55, 65), (x + 5, y + i * 11 + 4, 24, 2))
+            pygame.draw.rect(self.screen, (18, 20, 25), (x + 13, y + i * 11 + 6, 8, 4))
+
+    def _draw_toolbox(self, x: int, y: int) -> None:
+        pygame.draw.rect(self.screen, (8, 9, 12), (x + 3, y + 3, 40, 26))
+        pygame.draw.rect(self.screen, (98, 43, 38), (x, y, 40, 26))
+        pygame.draw.rect(self.screen, (12, 13, 17), (x, y, 40, 26), 2)
+        pygame.draw.rect(self.screen, (150, 76, 58), (x + 4, y + 4, 32, 4))
+        pygame.draw.rect(self.screen, (24, 25, 31), (x + 13, y - 5, 14, 6), 2)
+        pygame.draw.rect(self.screen, (182, 150, 70), (x + 17, y + 14, 6, 5))
+
+    def _draw_cone(self, x: int, y: int) -> None:
+        pygame.draw.polygon(self.screen, (8, 9, 12), [(x + 3, y + 28), (x + 13, y + 4), (x + 23, y + 28)])
+        pygame.draw.polygon(self.screen, (150, 82, 34), [(x, y + 26), (x + 10, y + 2), (x + 20, y + 26)])
+        pygame.draw.rect(self.screen, (218, 196, 142), (x + 7, y + 12, 7, 3))
+        pygame.draw.rect(self.screen, (54, 38, 24), (x - 4, y + 26, 28, 4))
+
+    def _draw_barrel(self, x: int, y: int) -> None:
+        pygame.draw.rect(self.screen, (8, 9, 12), (x + 2, y + 2, 26, 34))
+        pygame.draw.rect(self.screen, (34, 38, 48), (x, y, 26, 34))
+        pygame.draw.rect(self.screen, (12, 13, 17), (x, y, 26, 34), 2)
+        pygame.draw.rect(self.screen, (58, 64, 78), (x + 2, y + 7, 22, 3))
+        pygame.draw.rect(self.screen, (58, 64, 78), (x + 2, y + 24, 22, 3))
+        pygame.draw.rect(self.screen, (92, 78, 40), (x + 8, y + 14, 10, 6))
+
     def draw_menu_background(self) -> None:
-        self.frame()
         w, h = self.screen.get_size()
-        for gx in range(0, w, 32):
-            pygame.draw.line(self.screen, BG_GRID, (gx, 0), (gx, h))
-        for gy in range(0, h, 32):
-            pygame.draw.line(self.screen, BG_GRID, (0, gy), (w, gy))
-        for gx in range(16, w, 32):
-            for gy in range(16, h, 32):
-                pygame.draw.rect(self.screen, (17, 18, 23), (gx, gy, 2, 2))
+        key = (w, h)
+        if self._menu_bg is None or self._menu_bg_key != key:
+            scene = pygame.Surface((w, h))
+            saved = self.screen
+            self.screen = scene
+            self._draw_menu_scene(w, h)
+            self.screen = saved
+            self._menu_bg = scene
+            self._menu_bg_key = key
+        self.screen.blit(self._menu_bg, (0, 0))
+
+    def _draw_menu_scene(self, w: int, h: int) -> None:
+        self.frame()
+        wall_bottom = int(h * 0.58)
+        pygame.draw.rect(self.screen, BG_WALL, (0, 0, w, wall_bottom))
+        pygame.draw.rect(self.screen, BG_FLOOR, (0, wall_bottom, w, h - wall_bottom))
+        # corrugated wall panels
+        for x in range(0, w, 48):
+            if (x // 48) % 2:
+                pygame.draw.rect(self.screen, BG_WALL_ALT, (x, 0, 48, wall_bottom))
+            pygame.draw.line(self.screen, WALL_LINE, (x, 0), (x, wall_bottom), 1)
+            for ry in (26, wall_bottom - 34):
+                pygame.draw.rect(self.screen, (34, 36, 45), (x + 6, ry, 2, 2))
+                pygame.draw.rect(self.screen, (11, 12, 16), (x + 8, ry + 1, 1, 1))
+        # roll-up garage door in the open top-middle area
+        door_x = 380
+        door_w = max(0, (w - 486) - door_x - 24)
+        if door_w > 100:
+            pygame.draw.rect(self.screen, (10, 11, 14), (door_x + 2, 2, door_w, 116))
+            pygame.draw.rect(self.screen, (26, 28, 35), (door_x, 0, door_w, 116))
+            pygame.draw.rect(self.screen, (48, 51, 62), (door_x, 0, door_w, 116), 2)
+            for sy in range(8, 108, 14):
+                pygame.draw.rect(self.screen, (20, 22, 28), (door_x + 4, sy, door_w - 8, 2))
+                pygame.draw.rect(self.screen, (34, 36, 45), (door_x + 4, sy + 2, door_w - 8, 1))
+            pygame.draw.rect(self.screen, (72, 66, 45), (door_x + door_w // 2 - 16, 94, 32, 4))
+        # horizontal beams and floor edge
+        for by in (118, wall_bottom - 30):
+            pygame.draw.rect(self.screen, (30, 33, 41), (0, by, w, 8))
+            pygame.draw.line(self.screen, (46, 49, 60), (0, by), (w, by), 1)
+            pygame.draw.line(self.screen, (9, 10, 13), (0, by + 7), (w, by + 7), 1)
+        pygame.draw.rect(self.screen, (28, 30, 38), (0, wall_bottom - 3, w, 3))
+        # floor perspective seams and bay dashes
+        vx, vy = w // 2, wall_bottom - 40
+        for fx in range(-w, w * 2, 140):
+            pygame.draw.line(self.screen, FLOOR_LINE, (vx, vy), (fx, h), 1)
+        for fy in range(wall_bottom + 42, h, 54):
+            pygame.draw.line(self.screen, FLOOR_LINE, (0, fy), (w, fy), 1)
+        for bx in (72, w - 72):
+            for by in range(wall_bottom + 26, h - 82, 34):
+                pygame.draw.rect(self.screen, (70, 60, 32), (bx - 2, by, 4, 18))
+        # oil stains and cables (fixed, low contrast)
+        rnd = random.Random(19)
+        for _ in range(7):
+            ox = rnd.randrange(40, w - 40)
+            oy = rnd.randrange(wall_bottom + 20, h - 20)
+            rw = rnd.randrange(18, 52)
+            rh = rnd.randrange(5, 12)
+            pygame.draw.ellipse(self.screen, (16, 17, 22), (ox - rw // 2, oy - rh // 2, rw, rh))
+        for i in range(3):
+            x0 = 18 + i * 11
+            pygame.draw.lines(self.screen, (23, 25, 32), False,
+                              [(x0, h - 90), (x0 + 24, h - 130), (x0 + 52, h - 112), (x0 + 76, h - 150)], 3)
+        # side props in the safe gutters
+        self._draw_tire_stack(12, h - 330)
+        self._draw_toolbox(10, h - 218)
+        self._draw_barrel(w - 40, h - 300)
+        self._draw_cone(w - 38, h - 198)
+        # wall poster and a small neon strip in the open top-right area
+        poster = pygame.Rect(w - 156, 74, 118, 40)
+        pygame.draw.rect(self.screen, (10, 11, 14), poster.move(2, 2))
+        pygame.draw.rect(self.screen, (24, 27, 34), poster)
+        pygame.draw.rect(self.screen, (58, 62, 76), poster, 2)
+        pygame.draw.rect(self.screen, (44, 52, 62), (poster.x + 8, poster.y + 8, 36, 24))
+        pygame.draw.rect(self.screen, (112, 54, 42), (poster.x + 12, poster.y + 18, 28, 7))
+        pygame.draw.rect(self.screen, (170, 140, 58), (poster.x + 54, poster.y + 10, 52, 3))
+        pygame.draw.rect(self.screen, (78, 84, 98), (poster.x + 54, poster.y + 20, 36, 2))
+        pygame.draw.rect(self.screen, (78, 84, 98), (poster.x + 54, poster.y + 27, 26, 2))
+        # warm pools of light, kept subtle
+        glow(self.screen, (int(w * 0.22), 18), 190, (255, 176, 92), 0.16)
+        glow(self.screen, (int(w * 0.78), 18), 170, (255, 176, 92), 0.12)
+        # sparse dither
+        for gx in range(8, w, 16):
+            for gy in range(8, h, 16):
+                if (gx + gy) % 48 == 0:
+                    pygame.draw.rect(self.screen, (19, 21, 27), (gx, gy, 2, 2))
 
     def map_rect(self) -> pygame.Rect:
         w, h = self.screen.get_size()
@@ -664,10 +822,10 @@ class Renderer:
 
     def lobby_status(self, c: CarState):
         st = c.track_status()
-        label = {"on track": "READY", "idle": "STOPPED", "off track": "OFF TRACK",
-                 "charging": "ON CHARGER", "link lost": "LINK LOST"}.get(st, st.upper())
-        col = OK if st == "on track" else (
-            (120, 200, 255) if st == "charging" else (WARN if st == "off track" else DIM))
+        label = {"on track": "READY", "idle": "READY", "off track": "WAIT",
+                 "charging": "CHARGING", "link lost": "OFFLINE"}.get(st, st.upper())
+        col = OK if st in ("on track", "idle") else (
+            (120, 200, 255) if st == "charging" else (WARN if st == "off track" else BAD))
         return label, col
 
     def car_status(self, game: Game, c: CarState, now: float):
@@ -713,9 +871,9 @@ class Renderer:
     def _draw_car_card(self, game: Game, c: CarState, box: pygame.Rect, owner, owner_color,
                        hovering: list, src_color: dict, now: float) -> None:
         claimed = owner is not None
-        self.pixel_panel(box, CARD_HI if claimed or hovering else CARD,
-                         owner_color if claimed else (58, 60, 72), shadow=4,
-                         accent=owner_color if claimed else (52, 54, 66))
+        self.machine_panel(box, CARD_HI if claimed or hovering else CARD,
+                           owner_color if claimed else (52, 54, 66),
+                           border=owner_color if claimed else (58, 60, 72), shadow=4)
         if claimed:
             self.player_badge(box.x + 14, box.y + 14, owner, owner_color)
         elif game.ai_enabled and c.ai_pref:
@@ -723,13 +881,19 @@ class Renderer:
         else:
             self.chip(box.x + 14, box.y + 14, "PARKED", FAINT)
 
-        label, col = self.lobby_status(c)
-        self.chip_right(box.right - 12, box.y + 15, label, col)
+        if claimed or (game.ai_enabled and c.ai_pref):
+            self.ready_lamp_right(box.right - 12, box.y + 15, c)
 
-        self.draw_pixel_car(box.centerx, box.y + (72 if box.height >= 200 else 48),
-                            c.body_color, c.color, 5 if box.height >= 200 else 3, c.name)
-        self.text(c.name, (box.x + 16, box.y + max(66, box.height - 88)), TEXT, self.pixel_big)
-        battery_y = box.y + max(90, box.height - 54)
+        large = box.height >= 200
+        car_y = box.y + (72 if large else 48)
+        bob = int(round(math.sin(now * 2.2 + c.index * 1.7) * 1.5))
+        lift_y = box.y + (103 if large else 67)
+        lift_w = min(210 if large else 150, box.width - 80)
+        self.draw_lift(box.centerx - lift_w // 2, lift_y, lift_w, 8 if large else 6)
+        self.draw_pixel_car(box.centerx, car_y + bob, c.body_color, c.color,
+                            5 if large else 3, c.name)
+        self.text(c.name, (box.x + 16, box.y + max(78, box.height - 88)), TEXT, self.pixel_big)
+        battery_y = box.y + max(96, box.height - 54)
         self.battery_row(c, box.x + 16, battery_y, box.width - 32, detailed=True)
 
         if hovering:
@@ -745,9 +909,9 @@ class Renderer:
         if not sources:
             return
         gap = 12
-        width = (self.screen.get_width() - 56 - gap * (len(sources) - 1)) // len(sources)
+        width = (self.screen.get_width() - 112 - gap * (len(sources) - 1)) // len(sources)
         for i, s in enumerate(sources):
-            box = pygame.Rect(28 + i * (width + gap), y, width, h)
+            box = pygame.Rect(56 + i * (width + gap), y, width, h)
             self.pixel_panel(box, CARD, (58, 60, 72), shadow=3, accent=src_color[s], radius=2)
             self.token(box.x + 14, box.y + 10, s, src_color[s])
             car = claims.get(s)
@@ -756,18 +920,17 @@ class Renderer:
                 self.text("A / Enter", (box.x + 58, box.y + 30), FAINT, self.small)
             else:
                 self.text(car.name, (box.x + 58, box.y + 9), TEXT, self.pixel)
-                st = car.track_status()
-                label = {"on track": "READY", "idle": "STOPPED", "off track": "OFF TRACK",
-                         "charging": "CHARGING", "link lost": "LINK LOST"}.get(st, st.upper())
-                col = OK if st == "on track" else ((120, 200, 255) if st == "charging" else DIM)
-                self.text(label, (box.x + 58, box.y + 30), col, self.small)
+                label, col = self.lobby_status(car)
+                pygame.draw.rect(self.screen, col, (box.x + 58, box.y + 33, 7, 7))
+                pygame.draw.rect(self.screen, (12, 13, 17), (box.x + 58, box.y + 33, 7, 7), 1)
+                self.text(label, (box.x + 70, box.y + 30), col, self.small)
 
     def _draw_garage_panel(self, game: Game, source, box: pygame.Rect, claims: dict,
                            loadouts: dict, cursor: tuple[int, int], src_color: dict, now: float) -> None:
         color = src_color[source]
         car = claims.get(source)
         loadout = loadouts.get(source, Loadout())
-        self.pixel_panel(box, PANEL, color, shadow=4, accent=color, radius=2)
+        self.machine_panel(box, PANEL, color, border=color, shadow=4)
         header_h = 34
         pygame.draw.rect(self.screen, color, (box.x, box.y, box.width, header_h),
                          border_top_left_radius=2, border_top_right_radius=2)
@@ -778,17 +941,19 @@ class Renderer:
         tall = box.height >= 400
         car_h = 76 if tall else 40
         if car is not None:
+            bob = int(round(math.sin(now * 2.2 + car.index * 1.7) * 1.5))
             if tall:
-                self.draw_pixel_car(box.x + 56, cy + 32, car.body_color, car.color, 4, car.name)
+                self.draw_lift(box.x + 1, cy + 57, 110, 8)
+                self.draw_pixel_car(box.x + 56, cy + 32 + bob, car.body_color, car.color, 4, car.name)
                 battery_x = box.x + 120
                 battery_w = box.width - 136
             else:
-                self.draw_pixel_car(box.x + 34, cy + 20, car.body_color, car.color, 2, car.name)
+                self.draw_lift(box.x + 2, cy + 33, 64, 6)
+                self.draw_pixel_car(box.x + 34, cy + 20 + bob, car.body_color, car.color, 2, car.name)
                 battery_x = box.x + 66
                 battery_w = box.width - 82
             self.battery_row(car, battery_x, cy + (26 if tall else 12), battery_w, detailed=True)
-            label, col = self.lobby_status(car)
-            self.chip_right(box.right - 14, cy, label, col)
+            self.ready_lamp_right(box.right - 14, cy, car)
         y = cy + car_h
 
         sections = []
@@ -808,6 +973,9 @@ class Renderer:
                  "booster": "SPEED BOOST"}
         tile_h = 104 if box.height >= 400 else 54
         compact = box.height < 400
+        board = pygame.Rect(box.x + 14, y - 2, box.width - 28,
+                            len(sections) * (16 + tile_h + 10) + 2)
+        self.draw_pegboard(board)
         for row, (label, items, kind) in enumerate(sections):
             self.text(label, (box.x + 16, y), FAINT, self.pixel_small)
             y += 16
@@ -885,7 +1053,10 @@ class Renderer:
         for i, s in enumerate(sources):
             src_color[s] = getattr(s, "color", palette[i % len(palette)])
 
+        title_rect = pygame.Rect(16, 8, 340, 44)
+        self.machine_panel(title_rect, (20, 22, 28), (255, 176, 70), border=(58, 60, 72), shadow=4)
         self.text("OVERDRIVE ARENA", (28, 14), TEXT, self.pixel_title)
+        pygame.draw.rect(self.screen, (60, 190, 220), (28, 47, 248, 2))
         track = game.track
         track_rect = pygame.Rect(W - 486, 16, 188, 44)
         self.pixel_panel(track_rect, (26, 28, 35), OK if track else WARN, shadow=3,
@@ -911,17 +1082,24 @@ class Renderer:
 
         now = time.monotonic()
         race_ok = game.can_start(claims.values())
+        deck = pygame.Rect(16, H - 86, W - 32, 74)
+        self.machine_panel(deck, (20, 22, 28), (255, 176, 70), border=(58, 60, 72), shadow=0)
+        if status:
+            txt = status[:110]
+            sw = min(W - 120, self.small.size(txt)[0] + 16)
+            pygame.draw.rect(self.screen, (16, 18, 24), (56, H - 108, sw, 18))
+            pygame.draw.rect(self.screen, (48, 50, 62), (56, H - 108, sw, 18), 1)
         if tab == "cars":
             strip_y = H - 172
             content_bottom = strip_y - 12
             grid_top = 158
-            self.text("CHOOSE YOUR CAR", (28, 128), FAINT, self.pixel)
+            self.text("CHOOSE YOUR CAR", (56, 128), FAINT, self.pixel)
             n = len(game.cars)
             if n:
                 cols = 2 if n == 4 else (3 if n >= 3 else n)
                 rows = (n + cols - 1) // cols
                 gap = 18
-                avail_w = W - 56
+                avail_w = W - 112
                 avail_h = content_bottom - grid_top
                 card_w = min(300, (avail_w - gap * (cols - 1)) // cols)
                 card_h = min(230, (avail_h - gap * (rows - 1)) // rows)
@@ -940,7 +1118,7 @@ class Renderer:
                 self.text("NO CARS CONNECTED", (28, 190), WARN, self.pixel_big)
             self._draw_player_strip(game, sources, claims, src_color, strip_y, 60)
             if status:
-                self.text(status[:110], (28, H - 104), WARN, self.small)
+                self.text(status[:110], (64, H - 105), WARN, self.small)
             self.pixel_button("quit", 28, H - 68, 140, 44, "QUIT", "Esc", (60, 62, 74),
                               font=self.pixel)
             self.text(controls_cars, (186, H - 55), FAINT, self.small)
@@ -949,7 +1127,7 @@ class Renderer:
                               enabled=race_ok)
         else:
             content_bottom = H - 120
-            self.text("GARAGE", (28, 128), FAINT, self.pixel)
+            self.text("GARAGE", (56, 128), FAINT, self.pixel)
             n = len(sources)
             if n:
                 if n <= 1:
@@ -963,7 +1141,7 @@ class Renderer:
                 else:
                     cols, rows = 3, 2
                 gap = 18
-                avail_w = W - 56
+                avail_w = W - 112
                 avail_h = content_bottom - 154
                 panel_w = (avail_w - gap * (cols - 1)) // cols
                 panel_h = (avail_h - gap * (rows - 1)) // rows
@@ -971,7 +1149,7 @@ class Renderer:
                     panel_w = min(820, avail_w)
                     x0 = (W - panel_w) // 2
                 else:
-                    x0 = 28
+                    x0 = 56
                 y0 = 154
                 for i, s in enumerate(sources):
                     box = pygame.Rect(x0 + (i % cols) * (panel_w + gap),
@@ -981,7 +1159,7 @@ class Renderer:
             else:
                 self.text("NO CONTROLLERS", (28, 190), WARN, self.pixel_big)
             if status:
-                self.text(status[:110], (28, H - 104), WARN, self.small)
+                self.text(status[:110], (64, H - 105), WARN, self.small)
             self.pixel_button("back", 28, H - 68, 240, 44, "BACK: CARS", "Esc / View",
                               (70, 72, 84), font=self.pixel)
             self.text(controls_garage, (286, H - 55), FAINT, self.small)
