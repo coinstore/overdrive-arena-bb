@@ -407,53 +407,133 @@ class Renderer:
             pygame.draw.rect(self.screen, (12, 13, 17), (x + i * 9, y, 7, 5), 1)
         return total * 9
 
-    def draw_pixel_car(self, cx: int, cy: int, body, outline, scale: int = 4) -> None:
-        px = pygame.Surface((20, 10), pygame.SRCALPHA)
-        # chunky top-down car: player outline, body, cockpit, lights
-        pygame.draw.rect(px, outline, (1, 2, 18, 6))
-        pygame.draw.rect(px, body, (2, 3, 16, 4))
-        pygame.draw.rect(px, (24, 26, 34), (7, 3, 6, 4))
-        pygame.draw.rect(px, (42, 46, 58), (8, 4, 4, 2))
-        pygame.draw.rect(px, (12, 13, 17), (1, 2, 18, 6), 1)
-        pygame.draw.rect(px, (255, 250, 210), (18, 3, 1, 1))
-        pygame.draw.rect(px, (255, 250, 210), (18, 6, 1, 1))
-        pygame.draw.rect(px, (210, 60, 60), (1, 3, 1, 1))
-        pygame.draw.rect(px, (210, 60, 60), (1, 6, 1, 1))
-        img = pygame.transform.scale(px, (20 * scale, 10 * scale))
+    def draw_pixel_car(self, cx: int, cy: int, body, outline, scale: int = 4,
+                       model: str = "") -> None:
+        px = pygame.Surface((24, 12), pygame.SRCALPHA)
+        dark = (16, 17, 22)
+        glass = (46, 70, 104)
+        light = (255, 250, 210)
+        red = (232, 64, 64)
+        m = model.lower()
+        if "mammoth" in m:
+            body_rect = (1, 2, 22, 8)
+            roof = (7, 2, 8, 8)
+            windshield = (15, 3, 2, 6)
+            nose = (22, 4, 2, 4)
+        elif "dynamo" in m:
+            body_rect = (3, 3, 18, 6)
+            roof = (9, 3, 5, 6)
+            windshield = (13, 4, 2, 4)
+            nose = (21, 4, 2, 4)
+        elif "x52" in m:
+            body_rect = (2, 3, 19, 6)
+            roof = (7, 3, 6, 6)
+            windshield = (12, 4, 3, 4)
+            nose = (21, 4, 2, 4)
+        else:
+            body_rect = (2, 3, 19, 6)
+            roof = (8, 3, 6, 6)
+            windshield = (13, 4, 3, 4)
+            nose = (21, 4, 2, 4)
+        x, y, w, h = body_rect
+        pygame.draw.rect(px, outline, body_rect)
+        pygame.draw.rect(px, body, (x + 1, y + 1, w - 2, h - 2))
+        # wheels / side skirts
+        pygame.draw.rect(px, dark, (x + 2, y - 1, 4, 2))
+        pygame.draw.rect(px, dark, (x + 2, y + h - 1, 4, 2))
+        pygame.draw.rect(px, dark, (x + w - 7, y - 1, 4, 2))
+        pygame.draw.rect(px, dark, (x + w - 7, y + h - 1, 4, 2))
+        # cockpit and windshield
+        pygame.draw.rect(px, (26, 28, 36), roof)
+        pygame.draw.rect(px, glass, windshield)
+        # model accents
+        if "mammoth" in m:
+            pygame.draw.rect(px, (176, 190, 210), (4, y + 1, 1, h - 2))
+            pygame.draw.rect(px, (96, 110, 135), (5, y + 2, 2, h - 4))
+        elif "x52" in m:
+            pygame.draw.rect(px, red, (3, y + 2, 2, h - 4))
+            pygame.draw.rect(px, (255, 120, 90), (4, y + 2, 1, 1))
+        elif "dynamo" in m:
+            pygame.draw.rect(px, (210, 220, 235), (4, y + 1, 1, h - 2))
+        else:
+            pygame.draw.rect(px, outline, (3, y + 2, 1, h - 4))
+        # spoiler
+        pygame.draw.rect(px, dark, (x - 2, y + 1, 3, h - 2))
+        pygame.draw.rect(px, outline, (x - 2, y + 1, 1, h - 2))
+        # nose and lights
+        pygame.draw.rect(px, dark, nose)
+        pygame.draw.rect(px, outline, (nose[0], nose[1], nose[2], 1))
+        pygame.draw.rect(px, light, (nose[0] + 1, nose[1] + 1, 1, 1))
+        pygame.draw.rect(px, light, (nose[0] + 1, nose[1] + nose[3] - 2, 1, 1))
+        pygame.draw.rect(px, red, (x, y + 1, 1, 1))
+        pygame.draw.rect(px, red, (x, y + h - 2, 1, 1))
+        img = pygame.transform.scale(px, (24 * scale, 12 * scale))
+        ground_w = 20 * scale
+        pygame.draw.rect(self.screen, (6, 7, 10),
+                         (cx - ground_w // 2 + 2, cy + 6 * scale + 2, ground_w, 3))
+        pygame.draw.rect(self.screen, outline,
+                         (cx - ground_w // 2, cy + 6 * scale + 1, ground_w, 1))
         self.screen.blit(img, (cx - img.get_width() // 2, cy - img.get_height() // 2))
 
     def draw_pixel_icon(self, kind: str, cx: int, cy: int, color, scale: int = 3) -> None:
-        px = pygame.Surface((8, 8), pygame.SRCALPHA)
+        px = pygame.Surface((12, 12), pygame.SRCALPHA)
+        dark = (14, 15, 20)
+        metal = (174, 184, 202)
+        light = (235, 243, 255)
         if kind == "sniper":
-            pygame.draw.line(px, color, (1, 4), (6, 4))
-            pygame.draw.line(px, color, (4, 1), (4, 6))
-            pygame.draw.rect(px, color, (3, 3, 2, 2))
+            pygame.draw.rect(px, dark, (1, 7, 4, 3))
+            pygame.draw.rect(px, (118, 78, 46), (2, 7, 2, 2))
+            pygame.draw.rect(px, dark, (4, 5, 7, 2))
+            pygame.draw.rect(px, metal, (5, 5, 6, 1))
+            pygame.draw.rect(px, dark, (5, 2, 4, 3))
+            pygame.draw.rect(px, (80, 220, 255), (6, 3, 2, 1))
+            pygame.draw.rect(px, (255, 200, 40), (10, 4, 2, 4))
+            pygame.draw.rect(px, (255, 120, 30), (11, 5, 1, 2))
+            pygame.draw.rect(px, (255, 70, 70), (9, 5, 1, 2))
         elif kind == "blaster":
-            pygame.draw.line(px, color, (1, 4), (5, 4))
-            pygame.draw.line(px, color, (1, 2), (3, 2))
-            pygame.draw.line(px, color, (1, 6), (3, 6))
-            pygame.draw.rect(px, color, (6, 3, 2, 2))
+            pygame.draw.rect(px, dark, (2, 4, 8, 5))
+            pygame.draw.rect(px, (60, 190, 255), (3, 5, 7, 2))
+            pygame.draw.rect(px, (150, 240, 255), (4, 5, 3, 1))
+            pygame.draw.rect(px, dark, (3, 8, 3, 3))
+            pygame.draw.rect(px, (255, 170, 40), (9, 4, 3, 4))
+            pygame.draw.rect(px, (255, 240, 120), (10, 5, 1, 1))
+            pygame.draw.rect(px, (255, 80, 80), (2, 6, 1, 2))
         elif kind == "mine":
-            pygame.draw.circle(px, color, (4, 4), 2)
-            for dx, dy in ((0, -3), (0, 3), (-3, 0), (3, 0)):
-                pygame.draw.rect(px, color, (4 + dx, 4 + dy, 1, 1))
+            for sx, sy in ((5, 1), (5, 10), (1, 5), (10, 5),
+                           (2, 2), (9, 2), (2, 9), (9, 9)):
+                pygame.draw.rect(px, (255, 210, 70), (sx, sy, 2, 2))
+            pygame.draw.rect(px, (32, 34, 42), (3, 3, 6, 6))
+            pygame.draw.rect(px, (96, 102, 120), (4, 4, 4, 4))
+            pygame.draw.rect(px, (255, 70, 60), (5, 5, 2, 2))
+            pygame.draw.rect(px, (255, 150, 120), (5, 5, 1, 1))
         elif kind == "uturn":
-            pygame.draw.lines(px, color, False,
-                              [(6, 2), (2, 2), (2, 6), (5, 6)], 1)
-            pygame.draw.polygon(px, color, [(5, 6), (7, 5), (7, 7)])
+            pygame.draw.lines(px, (120, 230, 255), False,
+                              [(8, 2), (3, 2), (3, 8), (8, 8)], 2)
+            pygame.draw.polygon(px, (255, 220, 60),
+                                [(8, 6), (11, 8), (8, 10)])
+            pygame.draw.rect(px, light, (4, 3, 2, 1))
         elif kind == "hook":
-            pygame.draw.line(px, color, (1, 2), (5, 4))
-            pygame.draw.line(px, color, (5, 4), (2, 6))
-            pygame.draw.rect(px, color, (6, 5, 1, 2))
+            pygame.draw.lines(px, (255, 220, 80), False,
+                              [(1, 2), (3, 5), (6, 4), (8, 7)], 1)
+            pygame.draw.lines(px, (255, 160, 40), False,
+                              [(8, 7), (9, 9), (7, 10)], 1)
+            pygame.draw.rect(px, (255, 245, 150), (9, 8, 2, 2))
+            pygame.draw.rect(px, (255, 90, 70), (2, 3, 1, 1))
         elif kind == "anchor":
-            pygame.draw.line(px, color, (4, 1), (4, 6))
-            pygame.draw.line(px, color, (2, 3), (6, 3))
-            pygame.draw.lines(px, color, False, [(2, 5), (4, 7), (6, 5)])
+            pygame.draw.rect(px, (120, 190, 255), (5, 2, 2, 8))
+            pygame.draw.rect(px, (120, 190, 255), (3, 4, 6, 1))
+            pygame.draw.lines(px, (120, 190, 255), False,
+                              [(2, 8), (4, 10), (8, 10), (10, 8)], 1)
+            pygame.draw.circle(px, (255, 220, 90), (6, 2), 1)
         elif kind == "booster":
-            pygame.draw.polygon(px, color, [(6, 1), (2, 4), (4, 4), (3, 7), (7, 3), (5, 3)])
+            pygame.draw.polygon(px, (255, 160, 40),
+                                [(7, 1), (4, 5), (6, 5), (5, 8), (8, 5), (6, 5)])
+            pygame.draw.polygon(px, (255, 240, 120),
+                                [(7, 3), (5, 6), (6, 6), (6, 8), (8, 5)])
+            pygame.draw.rect(px, (90, 190, 255), (5, 8, 4, 2))
         else:
-            pygame.draw.rect(px, color, (2, 2, 4, 4))
-        img = pygame.transform.scale(px, (8 * scale, 8 * scale))
+            pygame.draw.rect(px, color, (3, 3, 6, 6), border_radius=2)
+        img = pygame.transform.scale(px, (12 * scale, 12 * scale))
         self.screen.blit(img, (cx - img.get_width() // 2, cy - img.get_height() // 2))
 
     def draw_menu_background(self) -> None:
@@ -647,7 +727,7 @@ class Renderer:
         self.chip_right(box.right - 12, box.y + 15, label, col)
 
         self.draw_pixel_car(box.centerx, box.y + (72 if box.height >= 200 else 48),
-                            c.body_color, c.color, 5 if box.height >= 200 else 3)
+                            c.body_color, c.color, 5 if box.height >= 200 else 3, c.name)
         self.text(c.name, (box.x + 16, box.y + max(66, box.height - 88)), TEXT, self.pixel_big)
         battery_y = box.y + max(90, box.height - 54)
         self.battery_row(c, box.x + 16, battery_y, box.width - 32, detailed=True)
@@ -696,24 +776,19 @@ class Renderer:
 
         cy = box.y + header_h + 8
         tall = box.height >= 400
-        car_h = 64 if tall else 40
+        car_h = 76 if tall else 40
         if car is not None:
             if tall:
-                self.draw_pixel_car(box.x + 46, cy + 28, car.body_color, car.color, 4)
-                text_x = box.x + 100
-                battery_x = box.x + 100
-                battery_w = box.width - 116
+                self.draw_pixel_car(box.x + 56, cy + 32, car.body_color, car.color, 4, car.name)
+                battery_x = box.x + 120
+                battery_w = box.width - 136
             else:
-                self.draw_pixel_car(box.x + 34, cy + 20, car.body_color, car.color, 2)
-                text_x = box.x + 66
+                self.draw_pixel_car(box.x + 34, cy + 20, car.body_color, car.color, 2, car.name)
                 battery_x = box.x + 66
                 battery_w = box.width - 82
-            self.text(car.name, (text_x, cy), TEXT, self.pixel)
-            self.battery_row(car, battery_x, cy + 24, battery_w, detailed=True)
+            self.battery_row(car, battery_x, cy + (26 if tall else 12), battery_w, detailed=True)
             label, col = self.lobby_status(car)
             self.chip_right(box.right - 14, cy, label, col)
-        else:
-            self.text("CHOOSE A CAR IN CARS", (box.x + 16, cy + 14), FAINT, self.small)
         y = cy + car_h
 
         sections = []
@@ -731,7 +806,7 @@ class Renderer:
         stats = {"sniper": "LONG SHOT", "blaster": "STRAIGHT SHOT", "mine": "LANE TRAP",
                  "uturn": "180° TURN", "hook": "SLOW TARGET", "anchor": "FULL STOP",
                  "booster": "SPEED BOOST"}
-        tile_h = 86 if box.height >= 400 else 54
+        tile_h = 104 if box.height >= 400 else 54
         compact = box.height < 400
         for row, (label, items, kind) in enumerate(sections):
             self.text(label, (box.x + 16, y), FAINT, self.pixel_small)
@@ -747,9 +822,9 @@ class Renderer:
                 pygame.draw.rect(self.screen, CARD_HI if selected else CARD, card, border_radius=2)
                 pygame.draw.rect(self.screen, color if selected else (58, 60, 72),
                                  card, 3 if selected else 2, border_radius=2)
-                icon_scale = 2 if compact else 3
+                icon_scale = 2 if compact else 4
                 self.draw_pixel_icon(icons.get(item, "blaster"), card.centerx,
-                                     card.y + (16 if compact else 22), color, icon_scale)
+                                     card.y + (16 if compact else 30), color, icon_scale)
                 name_font = self.pixel_small if compact or tile_w < 130 else self.pixel
                 name = names.get(item, item.upper())
                 img = name_font.render(name, True, TEXT)
@@ -757,32 +832,19 @@ class Renderer:
                     name = name[:-2] + ".."
                     img = name_font.render(name, True, TEXT)
                 self.screen.blit(img, (card.centerx - img.get_width() // 2,
-                                       card.y + (30 if compact else 46)))
+                                       card.y + (30 if compact else 58)))
                 if not compact and tile_w >= 120:
                     desc = stats.get(item, "")
                     dimg = self.small.render(desc, True, DIM)
                     self.screen.blit(dimg, (card.centerx - dimg.get_width() // 2,
-                                            card.y + 64))
+                                            card.y + 78))
                 if selected:
                     self.pixel_check(card.right - 12, card.y + 12, color)
                 elif hovered:
                     self.selection_brackets(card.inflate(6, 6), color)
                 x += tile_w + gap
             y += tile_h + 10
-        if tall:
-            srect = pygame.Rect(box.x + 16, box.bottom - 82, box.width - 32, 66)
-            self.pixel_panel(srect, CARD, color, shadow=2, accent=color, radius=2)
-            self.text("LOADOUT", (srect.x + 10, srect.y + 6), FAINT, self.pixel_small)
-            half = srect.width // 2
-            self.draw_pixel_icon(icons.get(loadout.weapon, "blaster"),
-                                 srect.x + 30, srect.y + 40, color, 2)
-            self.text(loadout.weapon_name(), (srect.x + 50, srect.y + 24), TEXT, self.pixel)
-            self.text("X WEAPON", (srect.x + 50, srect.y + 44), FAINT, self.small)
-            self.draw_pixel_icon(icons.get(loadout.powerup, "uturn"),
-                                 srect.x + half + 22, srect.y + 40, color, 2)
-            self.text(loadout.powerup_name(), (srect.x + half + 42, srect.y + 24),
-                      TEXT, self.pixel)
-            self.text("A POWERUP", (srect.x + half + 42, srect.y + 44), FAINT, self.small)
+
 
     def _draw_settings_modal(self, game: Game) -> None:
         w, h = self.screen.get_size()
@@ -888,7 +950,6 @@ class Renderer:
         else:
             content_bottom = H - 120
             self.text("GARAGE", (28, 128), FAINT, self.pixel)
-            self.text("CHOOSE ONE WEAPON AND ONE POWERUP", (120, 128), FAINT, self.small)
             n = len(sources)
             if n:
                 if n <= 1:
