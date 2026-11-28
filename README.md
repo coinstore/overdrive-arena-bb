@@ -140,8 +140,8 @@ shows the engine state directly.
 | Accelerate / decelerate | RT / LT     | R2 / L2       | W / S             |
 | Steer / lane change | Left stick X    | Left stick X  | A / D             |
 | Snap lane           | LB / RB, D-pad  | L1 / R1       | Q / E             |
-| Use weapon (Blaster/Mine) | X          | Square        | F                 |
-| Powerup (U-turn)    | A               | Cross         | U                 |
+| Fire weapon (hold for Blaster) | X     | Square        | F                 |
+| Powerup (hold or tap) | A             | Cross         | U                 |
 | Straight boost      | Left stick click | L3           | Left Shift        |
 | Emergency stop      | B               | Circle        | Space             |
 | Speed limit +/- 100 | D-pad up/down   | D-pad up/down | + / -             |
@@ -178,15 +178,28 @@ traffic. A player already using the full 2000 command range needs no boost.
 
 ### Battle weapons and lives
 
-- In the `GARAGE` step every player equips **one weapon** and **one powerup** at the same time as
-  everyone else. The default is Blaster + U-turn; Mine is the other weapon choice.
-- **Blaster** (1 s cooldown): fires straight from the car's nose in its current heading, as far as the
-  track surface continues. Only the nearest car whose body lies on that line is hit; other lanes and cars
-  around a corner are not. 20 damage; hits cost HP only and do not change speed.
-- **Mine** (4 s cooldown, 2 active): dropped in your lane, arms after 1 s, lives 45 s. A car passing within
-  12 cm in that lane takes 35 damage. Mines also cost HP only and do not stop the car.
-- Both weapons use **X**. **A** triggers the powerup (U-turn). **Y** is free.
-- AI cars pick Blaster or Mine at random for each battle.
+- In the `GARAGE` step every player equips **one weapon** and **one powerup**. Weapons are
+  **Sniper**, **Blaster** and **Mine**; powerups are **U-turn**, **Hook**, **Anchor** and **Booster**.
+- **Sniper** (2 s cooldown): fires straight from the car's nose in its current heading, as far as the
+  track surface continues. Only the nearest car in the same lane is hit; other lanes and cars around a
+  corner are not. 34 damage, no energy pool.
+- **Blaster** (hold X): short-range spread weapon, 500 mm. Every car in the cone is hit, including the
+  adjacent lanes; 3 damage per pulse at 5 pulses/s. Holding for 4 s empties the weapon and forces a
+  2.5 s overheat. A short tap only uses part of the energy. At 0 the blaster cannot fire until it has
+  recharged to 20 %. Weapon energy is separate from powerup energy.
+- **Mine** (4 s cooldown, 2 active): dropped in your lane, arms after 1 s, lives 45 s. A car passing
+  within 12 cm in that lane takes 35 damage. Mines cost HP only and do not stop the car.
+- **U-turn** (hold A): starts at 50 % powerup energy. 100 energy drains in 3.5 s, so a full bar gives the
+  full 3.5 s; 50 % gives 1.75 s. Releasing or running empty flips the car forward again. Reverse speed is
+  capped at 500 mm/s and the weapon stays enabled. Lap progress is invalidated.
+- **Hook** (hold A): tethers the nearest car ahead in any lane within 1000 mm (breaks beyond 1200 mm).
+  The victim's commanded speed is reduced to 75 %, never below 300 mm/s. Full energy lasts 5 s. The
+  attacker gets yellow front lights; the victim gets a slow red tail pattern and a visible cable.
+- **Anchor** (press A): stops the car for 2.5 s and costs 50 powerup energy. The car remains vulnerable
+  and can still fire. Useful to let an opponent pass, avoid a mine or block a lane briefly.
+- **Booster** (hold A): raises the target to 160 % of the personal limit, capped at 2000 mm/s. Full energy
+  lasts 2.5 s. It uses the same safety checks as the short straight boost and does not stack with it.
+- AI cars pick one weapon and one powerup at random for each battle and obey the same energy rules.
 - Each car starts with **5 lives**. 100 HP per life. At 0 HP the car is destroyed: stopped 3 s with all
   lights off, then respawns and loses one life. At 0 lives it is eliminated; the last car with lives
   remaining wins the battle. Kills are counted.
@@ -194,8 +207,8 @@ traffic. A player already using the full 2000 command range needs no boost.
 - Hits flash the victim's tail lights red and rumble its controller; a destroyed car gives a clearly stronger,
   longer vibration. The shooter's front lights alternate red/green while firing. A destroyed car stays dark
   until it respawns; an eliminated car stays dark for the rest of the battle.
-- The race HUD deliberately omits speed, lane, weapon cooldown, last lap and the event log. Battle cards
-  show HP, remaining lives and kills; race cards show lap progress and battery.
+- The race HUD deliberately omits speed, lane, weapon cooldown, powerup energy meters, last lap and the
+  event log. Battle cards show HP, remaining lives and kills; race cards show lap progress and battery.
 
 ### Car light language
 
@@ -255,12 +268,13 @@ Leaving a curve and reporting off-track also lowers the learned corner limit onc
 
 ### What the screen shows
 
-- **Map**: car sprites with trails, hit rings, explosions, floating damage; mines pulse once armed; cars that
-  are off the track, on a charger or have lost their link are listed in the map corner.
+- **Map**: car sprites with trails, hit rings, explosions, floating damage; mines pulse once armed; hook
+  cables link attacker and victim; cars that are off the track, on a charger or have lost their link are
+  listed in the map corner.
 - **Cards**: rank badge, car name, short driver label, status chip (LINING UP / ON THE LINE /
-  ELIMINATED / DESTROYED / WRONG WAY / OFF TRACK / ON CHARGER), HP + lives + kills in battle, lap progress
-  in race, and a compact battery readout. Speed, lane, weapon cooldown, last lap and the event log are
-  deliberately omitted.
+  ELIMINATED / DESTROYED / WRONG WAY / OFF TRACK / ON CHARGER / OVERHEAT / BOOSTER / ANCHOR /
+  TURNING / REVERSING), HP + lives + kills in battle, lap progress in race, and a compact battery icon.
+  Speed, lane, weapon cooldown, powerup energy meters, last lap and the event log are deliberately omitted.
 - **Map/clock**: car sprites, trails, hit rings, explosions, floating damage, armed mines, and the
   off-track/charger list in the corner. The race clock stays in the panel header.
 

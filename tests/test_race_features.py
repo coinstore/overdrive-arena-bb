@@ -854,6 +854,7 @@ class PredictionTests(unittest.TestCase):
     def human(self, direction):
         source = Mock(spec=I.InputSource)
         source.pressed.return_value = False
+        source.held.return_value = False
         source.throttle.return_value = 0.0
         source.brake.return_value = 0.0
         source.steer.return_value = 0.0
@@ -885,35 +886,45 @@ class PredictionTests(unittest.TestCase):
         self.game._human(self.car, .02, self.now)
         self.car.command_speed.assert_called_with(300, self.now, force=False)
 
-    def test_manual_u_turn_toggles_reverse_mode_without_rumble(self):
+    def test_manual_u_turn_is_held_and_flips_back_on_release(self):
         source = self.human(1)
-        source.pressed.side_effect = lambda action: action == I.UTURN
+        self.car.powerup_energy = 100.0
+        source.held.side_effect = lambda action: action == I.POWERUP
         self.game._human(self.car, .02, self.now)
         self.car.u_turn.assert_called_once()
         self.assertTrue(self.car.manual_reverse)
-        source.rumble.assert_not_called()
+        self.assertEqual(self.car.uturn_state, "flipping_out")
 
-        source.pressed.side_effect = None
-        source.pressed.return_value = False
+        # Confirm the firmware flip, then hold to reverse and drain energy.
         self.car.loc.direction = -1
-        self.car.u_turn.reset_mock()
-        for offset in (1.0, 5.0, 20.0):
-            self.game._human(self.car, .02, self.now + offset)
-        self.car.u_turn.assert_not_called()
+        with patch('game.game.time.monotonic', return_value=self.now + 0.5):
+            self.game._human(self.car, .5, self.now + 0.5)
+        self.assertEqual(self.car.uturn_state, "reversing")
+        with patch('game.game.time.monotonic', return_value=self.now + 0.7):
+            self.game._human(self.car, .2, self.now + 0.7)
+        self.assertLess(self.car.powerup_energy, 100.0)
 
-        source.pressed.side_effect = lambda action: action == I.UTURN
-        self.game._human(self.car, .02, self.now + 21.0)
+        # Release: one command back to forward, and no automatic correction on top.
+        source.held.side_effect = None
+        source.held.return_value = False
+        self.car.u_turn.reset_mock()
+        self.game._human(self.car, .02, self.now + 1.0)
+        self.car.u_turn.assert_called_once()
         self.assertFalse(self.car.manual_reverse)
-        self.car.u_turn.assert_called_once()      # the manual turn itself
-        self.assertEqual(self.car.last_uturn_t, self.now + 21.0)
+        self.assertEqual(self.car.uturn_state, "flipping_back")
 
-        source.pressed.side_effect = None
-        source.pressed.return_value = False
-        self.car.u_turn.reset_mock()
-        self.game._human(self.car, .02, self.now + 24.9)
-        self.car.u_turn.assert_not_called()       # let the manual flip settle
-        self.game._human(self.car, .02, self.now + 25.1)
-        self.car.u_turn.assert_called_once()      # automatic correction resumes
+        self.car.loc.direction = 1
+        self.game._human(self.car, .02, self.now + 1.2)
+        self.assertEqual(self.car.uturn_state, "idle")
+        self.assertGreaterEqual(self.car.uturn_ready_at, self.now + 1.2)
+
+    def test_manual_u_turn_needs_fifty_percent_energy(self):
+        source = self.human(1)
+        self.car.powerup_energy = 49.0
+        source.held.side_effect = lambda action: action == I.POWERUP
+        self.game._human(self.car, .02, self.now)
+        self.car.u_turn.assert_not_called()
+        self.assertEqual(self.car.uturn_state, "idle")
 
     def test_forward_player_is_not_turned_around(self):
         self.human(1)
@@ -992,7 +1003,7 @@ class ControllerTests(unittest.TestCase):
     def test_equipping_a_loadout_leaves_the_lobby_quiet(self):
         self.app.setup_tab = "garage"
         self.app.claims[self.pad] = self.app.cars[0]
-        self.app.garage_cursors[self.pad] = (0, 1)
+        self.app.garage_cursors[self.pad] = (0, 2)
         self.press(I.SELECT)
         self.app.pairing_tick()
         self.assertEqual(self.app.loadouts[self.pad].weapon, "mine")
@@ -1030,7 +1041,7 @@ class ControllerTests(unittest.TestCase):
         self.app.pairing_tick()
         self.assertEqual(self.app.setup_tab, "garage")
 
-        self.app.garage_cursors[self.pad] = (0, 1)
+        self.app.garage_cursors[self.pad] = (0, 2)
         self.press(I.SELECT)
         self.app.pairing_tick()
         self.assertEqual(self.app.loadouts[self.pad].weapon, "mine")

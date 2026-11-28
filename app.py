@@ -8,7 +8,7 @@ Gamepad (Xbox names; PS5: Cross=A, Circle=B, Square=X, Triangle=Y, Share=Back, O
   RT / LT             accelerate / decelerate   Left stick X   change lane (4 lanes)
                       (releasing holds speed)  D-pad up/down  speed limit +/- 100
   LB / RB, D-pad L/R  snap one lane
-  X                   use weapon                A              powerup (U-turn)
+  X                   hold fire / tap           A              powerup (hold/tap)
   B                   emergency stop            Y              unused in a race
   Start               next / start              Back           back / quit
   Back / View         garage -> cars            LT + L-stick   settings (lobby)
@@ -53,7 +53,7 @@ PAIRING, SCANNING, GRID, READY, COUNTDOWN, RACE = "pairing", "scanning", "grid",
 CONTROLS_CARS = "A/Enter choose · B release · X/Tab AI · Y/T scan"
 CONTROLS_GARAGE = "A/Enter equip · Up/Down slot · Left/Right item"
 CONTROLS_RACE = ("pad: R2 gas · L2 brake · stick lanes\n"
-                 "X weapon · A powerup · B stop\n"
+                 "X hold fire · A powerup · B stop\n"
                  "key: W/S · A/D · Q/E · F/U · Space · Esc")
 CONTROLS_RACE_NO_WEAPON = ("pad: R2 gas · L2 brake · stick lanes\n"
                            "A powerup · B stop · Back: lobby\n"

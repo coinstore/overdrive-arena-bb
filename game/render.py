@@ -376,6 +376,14 @@ class MapView:
             pygame.draw.circle(screen, (60, 25, 10), (x, y), 3)
             pygame.draw.circle(screen, m.owner.color, (x, y), 9, 1)
 
+        # hook cables
+        for t in game.tethers:
+            a = self.to_screen(t.x0, t.y0)
+            b = self.to_screen(t.x1, t.y1)
+            pygame.draw.line(screen, (80, 60, 20), a, b, 4)
+            pygame.draw.line(screen, t.color, a, b, 2)
+            glow(screen, b, 10, t.color, 0.7)
+
         # trails
         for c in game.cars:
             v = self.views.setdefault(c.index, CarView())
@@ -1042,6 +1050,16 @@ class Renderer:
             return label, col
         if now < c.boost_until:
             return "BOOST", OK
+        if now < c.blaster_overheated_until:
+            return "OVERHEAT", BAD
+        if c.booster_active:
+            return "BOOSTER", OK
+        if c.anchor_active:
+            return "ANCHOR", WARN
+        if c.uturn_state in ("flipping_out", "flipping_back"):
+            return "TURNING", WARN
+        if c.uturn_state == "reversing":
+            return "REVERSING", WARN
         if c.ai_track_recovery:
             return ("FINDING TRACK" if c.ai_track_recovery == "searching" else "NUDGE TO RESUME"), WARN
         return None
@@ -1163,9 +1181,9 @@ class Renderer:
                  "uturn": "uturn", "hook": "hook", "anchor": "anchor", "booster": "booster"}
         names = {"sniper": "SNIPER", "blaster": "BLASTER", "mine": "MINE",
                  "uturn": "U-TURN", "hook": "HOOK", "anchor": "ANCHOR", "booster": "BOOSTER"}
-        stats = {"sniper": "LONG SHOT", "blaster": "STRAIGHT SHOT", "mine": "LANE TRAP",
-                 "uturn": "180° TURN", "hook": "SLOW TARGET", "anchor": "FULL STOP",
-                 "booster": "SPEED BOOST"}
+        stats = {"sniper": "LONG SHOT", "blaster": "SPREAD · 500 MM", "mine": "LANE TRAP",
+                 "uturn": "HOLD · REVERSE", "hook": "HOLD · SLOW", "anchor": "STOP 2.5 S",
+                 "booster": "HOLD · 160%"}
         tile_h = 104 if box.height >= 400 else 50
         compact = box.height < 400
         board = pygame.Rect(box.x + 14, y - 2, box.width - 28,

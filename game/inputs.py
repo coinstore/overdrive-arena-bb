@@ -19,7 +19,11 @@ AXIS_MAX = 32767.0
  MENU_LEFT, MENU_RIGHT, MENU_UP, MENU_DOWN, SELECT, RELEASE, TOGGLE_AI, READY, BACK, SCAN,
  TOGGLE_MODE, SECONDARY, BOOST, FAIR_GAME, SETTINGS) = range(22)
 
-ACTION_NAMES = {STOP: "stop", UTURN: "u-turn", FIRE: "fire", LANE_LEFT: "lane left",
+# The powerup button (A / U) keeps its historical name; the equipped powerup
+# decides what it does (U-turn, hook, anchor or booster).
+POWERUP = UTURN
+
+ACTION_NAMES = {STOP: "stop", UTURN: "powerup", FIRE: "fire", LANE_LEFT: "lane left",
                 LANE_RIGHT: "lane right", LIMIT_UP: "limit +", LIMIT_DOWN: "limit -", MENU_LEFT: "menu left",
                 MENU_RIGHT: "menu right", MENU_UP: "menu up", MENU_DOWN: "menu down", SELECT: "select",
                 RELEASE: "release", TOGGLE_AI: "AI/parked", READY: "ready", BACK: "back", SCAN: "scan track",
@@ -38,6 +42,7 @@ class InputSource:
     def brake(self) -> float: return 0.0
     def steer(self) -> float: return 0.0
     def pressed(self, action: int) -> bool: return False
+    def held(self, action: int) -> bool: return False
     def rumble(self, low: float, high: float, ms: int) -> None: ...
     def close(self) -> None: ...
     def alive(self) -> bool: return True
@@ -101,6 +106,9 @@ class Pad(InputSource):
 
     def pressed(self, action: int) -> bool:
         return self._now.get(action, False) and not self._prev.get(action, False)
+
+    def held(self, action: int) -> bool:
+        return self._now.get(action, False)
 
     def _axis(self, a: int) -> float:
         return self.ctrl.get_axis(a) / AXIS_MAX
@@ -194,6 +202,9 @@ class Keyboard(InputSource):
 
     def pressed(self, action: int) -> bool:
         return any(k in self._down for k in self.KEYS[action])
+
+    def held(self, action: int) -> bool:
+        return any(self._keys[k] for k in self.KEYS[action])
 
 
 def list_pads() -> list[Pad]:
