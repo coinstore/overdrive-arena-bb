@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 from anki import protocol as P
 from anki.track import Track, Piece, START, START_ID, FINISH_ID, STRAIGHT, TURN
-from game.game import CarState, Game, GRID_RETRY_SPEED
+from game.game import CarState, Game, GRID_RETRY_SPEED, grid_lane_order
 
 class GridTests(unittest.TestCase):
     def setUp(self):
@@ -253,14 +253,57 @@ class GridTests(unittest.TestCase):
         self.assertTrue(self.g.grid_tick(0))
         self.assertEqual(self.c.grid_state, '')
 
-    def test_unavailable_participant_blocks_countdown(self):
+    def test_disconnected_participant_blocks_countdown(self):
         self.c.car.connected = False
         self.assertFalse(self.g.grid_tick(0))
         self.assertEqual(self.c.grid_state, 'waiting for connection')
-        self.c.car.connected = True
+
+    def test_car_on_its_charger_is_left_out_of_the_grid(self):
         self.c.car.on_charger = True
-        self.assertFalse(self.g.grid_tick(0))
-        self.assertEqual(self.c.grid_state, 'waiting for charger removal')
+        self.g.begin_grid()
+        self.assertTrue(self.c.race_excluded)
+        self.assertFalse(self.c.participates())
+        self.assertEqual(self.c.grid_state, '')
+        self.c.hard_stop.assert_called()
+        self.assertTrue(self.g.grid_tick(0))
+
+    def test_car_put_on_the_charger_during_the_grid_is_left_out(self):
+        self.g.begin_grid()
+        self.assertEqual(self.c.grid_state, 'driving')
+        self.assertTrue(self.c.participates())
+        self.c.car.on_charger = True
+        self.assertTrue(self.g.grid_tick(0))
+        self.assertEqual(self.c.grid_state, '')
+        self.assertTrue(self.c.race_excluded)
+        self.assertFalse(self.c.participates())
+
+    def test_lane_order_ignores_cars_on_the_charger(self):
+        other = CarState(SimpleNamespace(model='Other', battery_mv=0, connected=True,
+                                         on_charger=True, send=Mock()), 1, Mock(), 800)
+        other.ai = True
+        other.lights_idle = Mock()
+        other.hard_stop = Mock()
+        other.set_lane = Mock()
+        self.g.cars.append(other)
+        self.g.begin_grid()
+        self.assertTrue(other.race_excluded)
+        self.assertEqual(other.grid_state, '')
+        self.assertEqual(self.c.grid_lane, grid_lane_order(1)[0])
+
+    def test_excluded_car_is_not_driven_during_the_race(self):
+        self.c.car.on_charger = True
+        self.g.begin_grid()
+        self.c.source = Mock()
+        self.c.source.alive.return_value = True
+        self.c.car.on_charger = False      # taken off during the race: stays out
+        self.c.command_speed.reset_mock()
+        self.c.apply_lane = Mock()
+        self.g._track_laps = Mock()
+        self.g._reconcile_vehicle_positions = Mock()
+        self.g.running = True
+        self.g.tick(0)
+        self.c.command_speed.assert_called_with(0, ANY)
+        self.c.apply_lane.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()

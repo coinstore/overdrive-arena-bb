@@ -234,6 +234,7 @@ class CarState:
         self.source: Optional[I.InputSource] = None
         self.ai = False
         self.ai_pref = True                 # lobby: unclaimed car -> AI (True) or parked (False)
+        self.race_excluded = False          # left out of the current race (e.g. still on its charger)
         self.ai_difficulty = "normal"
         self.loc: Optional[CarLocalizer] = None
         self.extra_listener = None          # e.g. the track scanner while scanning
@@ -612,7 +613,7 @@ class CarState:
             self.loc.rebase_engine_speed(0.0, now)
 
     def participates(self) -> bool:
-        return self.source is not None or self.ai
+        return (self.source is not None or self.ai) and not self.race_excluded
 
     def steer(self, amount: float, dt: float, now: float) -> None:
         """Human steering: one discrete lane step per stick push, not an analog offset."""
@@ -968,6 +969,10 @@ class Game:
         """Send every participating car to the start line, one lane each."""
         now = time.monotonic()
         self.assign_roles()
+        # Cars still on their charger when the grid forms are left out of this
+        # race instead of blocking the start until they are removed.
+        for c in self.cars:
+            c.race_excluded = c.charging
         self.phase = "grid"
         self.running = False
         self.update_fair_penalties()
@@ -986,6 +991,8 @@ class Game:
                 c.grid_state = ""
                 c.start_bar_locked = False
                 c.hard_stop(now)
+                if c.race_excluded:
+                    self.log(f"{c.name} is on its charger - left out of this race", c.color)
                 continue
             c.grid_lane = lane_order[lane_i % len(lane_order)]
             lane_i += 1
@@ -1023,7 +1030,7 @@ class Game:
         self.log("forming the grid: cars drive to the start line")
 
     def grid_tick(self, dt: float) -> bool:
-        """Wait for every participant; only explicitly parked cars are excluded."""
+        """Wait for every grid participant; parked and charger cars are left out."""
         now = time.monotonic()
         for c in self.cars:
             if c.loc:
@@ -1031,14 +1038,20 @@ class Game:
         done = True
         for c in self.cars:
             st = c.grid_state
-            if not c.participates():
+            if not c.participates() or not st:
                 c.grid_state = ""
                 c.command_speed(0, now)
                 continue
-            if not c.car.connected or c.charging:
-                c.grid_state = "waiting for connection" if not c.car.connected else "waiting for charger removal"
-                if c.car.connected:
-                    c.command_speed(0, now)
+            if c.charging:
+                # Put back on the charger during the grid: leave it out for
+                # this race instead of blocking the start indefinitely.
+                c.race_excluded = True
+                c.grid_state = ""
+                c.command_speed(0, now)
+                self.log(f"{c.name} is on its charger - left out of this race", c.color)
+                continue
+            if not c.car.connected:
+                c.grid_state = "waiting for connection"
                 done = False
                 continue
             if st == "placed":
@@ -1824,13 +1837,13 @@ class Game:
                     # car a fresh bounded search instead of waiting for a nudge.
                     c.ai_track_recovery = "searching"
                     c.ai_track_recovery_t = now
-            if c.source is not None and c.source.alive():
+            if c.participates() and c.source is not None and c.source.alive():
                 self._human(c, dt, now)
-            elif c.ai:
+            elif c.participates() and c.ai:
                 self._ai(c, dt, now)
             else:
                 c.command_speed(0, now)
-            if not c.ai_track_recovery:
+            if c.participates() and not c.ai_track_recovery:
                 c.apply_lane(now)
             self._tick_car_energy(c, now, dt)
         self._resolve_mines(now)

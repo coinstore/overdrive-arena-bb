@@ -25,8 +25,9 @@ cars directly, with the protocol verified on real hardware (firmware 11866) and 
   Pads can join or leave while the app runs.
 - **Starting grid**: every participating car keeps retrying until it stops on the start-line bar. The car
   brakes itself on the bar via a firmware command, so the stop does not depend on Bluetooth latency.
-  Lost position triggers slow recovery bursts with pauses; missed starts, charging and link loss do not
-  exclude a car. Cars line up in separate lanes, then wait on the line until Start / Options / Space is
+  Lost position triggers slow recovery bursts with pauses; missed starts and link loss do not
+  exclude a car. A car still on its charger when the grid forms is left out of that race. Cars line up in
+  separate lanes, then wait on the line until Start / Options / Space is
   pressed again. The 3-2-1-GO countdown then launches every car at a 400 mm/s start speed (capped by the
   race and personal limits), so players do not need to accelerate from a standstill. To leave a car out,
   return to the lobby with Back / Esc and set it to parked.
@@ -106,8 +107,10 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
    the start-line bar. Because the car stops on the shared bar event, every car lines up at the same
    physical point without the Bluetooth round-trip. Cars that overshoot the bar do a full lap at 500 mm/s
    before trying again, and a car may settle in another free lane instead of repeating a lane change.
-   Missing position triggers repeated 1.5-second recovery bursts with 2-second pauses. Charging or disconnected cars
-   remain pending. The countdown waits until every participant is ready; only parked cars are excluded.
+   Missing position triggers repeated 1.5-second recovery bursts with 2-second pauses. Disconnected cars
+   remain pending. Cars still on their charger when the grid forms are left out of that race instead of
+   blocking the start; take such a car off the charger before starting and it joins the next race. Parked
+   cars are left out as before. The countdown waits only for the remaining grid participants.
    Once the field is on the line, press **Start / Options / Space** again to begin the 3-2-1-GO countdown.
    At GO every participant receives a 400 mm/s launch target, so cars move immediately; throttle still
    raises the player's held speed afterwards.
