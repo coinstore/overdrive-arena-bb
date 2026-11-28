@@ -9,13 +9,15 @@ cars directly, with the protocol verified on real hardware (firmware 11866) and 
 
 ![Battle](docs/battle.png)
 
-| Pairing | Track scan |
+| Lobby | Garage |
 |---|---|
-| ![Pairing](docs/pairing.png) | ![Scan](docs/scan.png) |
+| ![Lobby](docs/pairing.png) | ![Garage](docs/garage.png) |
 
-| Starting grid | Race finish |
+| Track scan | Starting grid |
 |---|---|
-| ![Grid](docs/grid.png) | ![Race win](docs/race-win.png) |
+| ![Scan](docs/scan.png) | ![Grid](docs/grid.png) |
+
+![Battle finish](docs/battle-win.png)
 
 ## Features
 
@@ -27,24 +29,17 @@ cars directly, with the protocol verified on real hardware (firmware 11866) and 
   exclude a car. Cars line up in separate lanes, then wait on the line until Start / Options / Space is
   pressed again. The 3-2-1-GO countdown then launches every car at a 400 mm/s start speed (capped by the
   race and personal limits), so players do not need to accelerate from a standstill. To leave a car out,
-  return to pairing with Back / Esc and set it to parked.
-- **Race speed**: click MAX or press right-stick / R in setup to cycle the shared ceiling from 200 to
-  2000 mm/s. It caps players, AI and boosts; individual lower limits still apply. At race finish only
-  the winning car remains illuminated until returning to setup.
+  return to the lobby with Back / Esc and set it to parked.
+- **Race speed**: open Settings (gear / F2 / LT + left-stick click) to cycle the shared ceiling from 200
+  to 2000 mm/s. It caps players, AI and boosts; individual lower limits still apply. At race finish only
+  the winning car remains illuminated until returning to the lobby.
   The winner's RGB celebrates with 12 slow blinks over 12 seconds; losing players get a 1.2-second
   controller vibration. Results remain visible for 14 seconds (Start / Options can begin a rematch sooner).
-- **Fair Game**: toggle FAIR in setup, press H, or hold LT and click the right stick. During a race,
+- **Fair Game**: toggle FAIR in Settings, press H, or hold LT and click the right stick. During a race,
   first place loses 20 mm/s and second loses 10 mm/s from the commanded speed; later places lose none.
-  Penalties follow live positions, apply to players and AI, and are shown beside speed. Parked cars
-  are excluded, solo runs have no penalty, and Fair Game records are separate from normal races.
-- **High scores menu**: open HIGH SCORES from setup, press F2, or hold LT and click the left stick.
-  A local browser scorebook shows circuit shapes, best laps and race finishes, with filters for mode,
-  players/AI, cars, controllers and their pairs. Leave it on a second monitor: scores update automatically
-  every 1–2 seconds while the app runs, preserving your filters and selected track. A connection indicator
-  shows if the game closes, retaining the last displayed results. The server listens only on this PC.
-  New records save track geometry; older layouts are recovered for the current circuit or marked
-  unavailable until rescanned.
-- **Player lights**: each player keeps one colour across the pairing badge, car card and roof LED. The roof is steady while healthy and blinks faster as battle HP drops; the front lights flash red/green when firing, the tail flashes red when hit, and a destroyed car goes dark. Battery warnings stay on screen, not on the car.
+  Penalties follow live positions, apply to players and AI. Parked cars are excluded and solo runs have
+  no penalty.
+- **Player lights**: each player keeps one colour across the lobby badge, car card and roof LED. The roof is steady while healthy and blinks faster as battle HP drops; the front lights flash red/green when firing, the tail flashes red when hit, and a destroyed car goes dark. Battery warnings stay on screen, not on the car.
 - **Cooperative track scanning**: cars share compatible lap observations and wheel measurements to fill
   missing codes and turns. Code changes also recover missed transition messages. A live reconstruction
   replaces the saved map while scanning, with unresolved gaps marked `?`. Scan speed cycles through
@@ -55,14 +50,13 @@ cars directly, with the protocol verified on real hardware (firmware 11866) and 
   code/bar for weapons and AI and extrapolates for up to three seconds without a fix. Track codes are
   treated as zones, not exact points: a prediction inside the code's zone is kept, only a prediction
   outside it is corrected to the nearest zone edge. Transition bars remain exact anchors.
-- **Map records**: best lap and fastest completed race saved in `records.json` and shown on the main
-  screen in ranked car and controller tables. Personal records are saved even when they do not beat the
-  overall map record. Human and AI records, modes, and race lengths are kept separate; car/controller
-  combinations are also retained. Cars use their Bluetooth address. Controller records use model plus
-  player slot (P1/P2/P3), since identical pads do not expose a unique identity through pygame. Keep the
-  same connection order for consistent slots. Existing overall records are retained; historical personal
-  times that were never saved cannot be reconstructed. Long tables rotate pages every seven seconds.
-- **Two modes**: BATTLE (blasters, mines, HP, kills) or RACE (laps only, first to N laps wins).
+- **Two modes**: BATTLE (one weapon + one powerup per player, 5 lives, last car wins) or RACE
+  (laps only, powerups only, first to N laps wins).
+- **Lobby and garage**: a two-step setup wizard in a pixel-art workshop. Step 1 chooses cars in
+  parking bays with player-coloured ownership, 3/4 hero sprites and ready lamps; step 2 gives every
+  player their own workbench panel to configure a weapon and powerup at the same time. Silkscreen
+  headings, chunky buttons, a structured pit-lane floor and a control-console deck keep the UI dense
+  but readable.
 - **AI drivers** with per-car Easy, Normal, Hard, and Extreme levels, including AI-only races. They brake before curves and accelerate on straights.
 - **Battery and charger tracking**: voltage, estimated %, sag under load (finds tired cells), CHARGING /
   CHARGED when a car sits on its pad, CSV history.
@@ -87,23 +81,27 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
 ## How to play
 
 1. **Connect**: every advertising car is connected (limit with `--max-cars N` or `--car <address>`).
-2. **Pairing screen**: one card per car with a **driver slot** that reads either a player badge (P1, P2, KB),
-   **AI** or **PARKED**. Every controller and the keyboard has its own cursor badge floating above the cards.
+2. **CARS**: one card per car with a clear player-coloured owner badge (`P1`, `P2`, `KB`), **AI** or
+   **PARKED**. Every controller and the keyboard has its own cursor badge.
    - Move the cursor: D-pad / left stick (keyboard: Left/Right). The car under a cursor blinks its headlights.
    - **A** (Enter): take the car you are hovering. Press again, or **B** (Backspace), to release it.
    - **X** (Tab): cycle an unclaimed car through Easy / Normal / Hard / Extreme / Parked (default: Normal).
    - **SCAN TRACK** (Y / T / click): cars combine compatible readings to reconstruct the circuit together.
      Watch the new map grow during scanning. Cars with no codes for 8 s, or lost codes for 3.5 s, stop
      independently; other cars continue. Only a complete closed loop replaces the saved map.
-   - **BATTLE / RACE** (M / left-stick click / click) picks the mode; **D-pad up/down** or the **laps** button selects 3 / 5 / 10 / 20 laps.
-   - **MAX** (right-stick click / R / click): cycle the shared speed ceiling in 200 mm/s steps.
-   - **FAIR** (LT + right-stick click / H / click): enable position penalties of 20 mm/s for first and
-     10 mm/s for second. Other positions have no penalty.
-   - **HIGH SCORES** (LT + left-stick click / F2 / click): open the live browser scorebook. Move it to
-     your second monitor and keep racing; scores update automatically without reopening the page.
-   - **RACE** (Start / Options / Space / click): enabled with at least one connected player or AI car off its charger. Leave all cars unclaimed for an AI-only race. The controllers legend and
-     the "players / AI / parked" line tell you who drives what.
-3. **Starting grid**: each participant drives to the start line in its own lane (turning around first if it
+   - **SETTINGS** (gear / F2 / LT + left-stick click): shared speed ceiling and Fair Game.
+   - **BATTLE / RACE** (M / left-stick click / click) picks the mode; **D-pad up/down** or the **laps**
+     button selects 3 / 5 / 10 / 20 laps.
+   - **NEXT: GARAGE** (Start / Options / Space / click): enabled with at least one connected player or AI
+     car off its charger. This does not start the race yet.
+3. **GARAGE**: every player gets their own panel and configures a weapon and powerup at the same time.
+   Battle shows `WEAPON` + `POWERUP`; Race shows `POWERUP` only.
+   - **A / Enter**: equip the hovered item.
+   - **D-pad up/down**: switch between weapon and powerup.
+   - **D-pad left/right**: choose an item.
+   - **Back / Esc / View**: return to CARS.
+   - **START BATTLE / RACE** (Start / Options / Space / click): starts the race.
+4. **Starting grid**: each participant drives to the start line in its own lane (turning around first if it
    faces the wrong way), crawls the last piece at 300 mm/s and asks the car's firmware to brake itself on
    the start-line bar. Because the car stops on the shared bar event, every car lines up at the same
    physical point without the Bluetooth round-trip. Cars that overshoot the bar do a full lap at 500 mm/s
@@ -113,7 +111,7 @@ Controllers pulse on **3, 2, 1**, with a stronger pulse at **GO**.
    Once the field is on the line, press **Start / Options / Space** again to begin the 3-2-1-GO countdown.
    At GO every participant receives a 400 mm/s launch target, so cars move immediately; throttle still
    raises the player's held speed afterwards.
-4. **Race**. **Back** (Esc) stops everything and returns to pairing. **F11** toggles fullscreen.
+5. **Race**. **Back** (Esc) stops everything and returns to the lobby. **F11** toggles fullscreen.
    After a finish, **Start / Options** starts another grid and countdown with the same selections.
    Put an off-track car back on the track and nudge it; it resumes automatically as soon as it reads a
    track transition. No recovery button or key press is needed. Recovery invalidates the current lap.
@@ -130,8 +128,8 @@ in timestamp order, so a forward circuit completes a lap even if the finish code
 updates arrived between frames. Crossing times are interpolated along the track geometry. The lap counter
 cannot subtract distance already counted or count a finish twice. Prediction freezes after one second
 without a fix; silence holds lap progress instead of erasing it or inventing more laps. Reversal, explicit
-off-track reports and recovery reset the partial lap. The HUD shows current-lap progress and reset reasons.
-A complete forward circuit is required for a timed lap.
+off-track reports and recovery reset the partial lap. The HUD shows current-lap progress; reset reasons
+are written to the log. A complete forward circuit is required for a timed lap.
 
 The engine prediction horizon can be tuned with `ARENA_ENGINE_HORIZON` (seconds, default 3); the code-zone
 phase (default 0.05) with `ARENA_CODE_SLOT_BIAS`. The map has no separate smoothing or render lead: it
@@ -142,13 +140,15 @@ shows the engine state directly.
 | Accelerate / decelerate | RT / LT     | R2 / L2       | W / S             |
 | Steer / lane change | Left stick X    | Left stick X  | A / D             |
 | Snap lane           | LB / RB, D-pad  | L1 / R1       | Q / E             |
-| Fire blaster        | X               | Square        | F                 |
-| Drop mine           | Y               | Triangle      | G                 |
-| U-turn              | A               | Cross         | U                 |
+| Fire weapon (hold for Blaster) | X     | Square        | F                 |
+| Powerup (hold or tap) | A             | Cross         | U                 |
 | Straight boost      | Left stick click | L3           | Left Shift        |
 | Emergency stop      | B               | Circle        | Space             |
 | Speed limit +/- 100 | D-pad up/down   | D-pad up/down | + / -             |
+| Next / start        | Start / Options | Options       | Space             |
+| Settings            | LT + Left stick click | L2 + L3 | F2                |
 | Back / quit         | View            | Share         | Esc               |
+| Garage -> CARS      | View            | Share         | Esc               |
 
 ### Speed and boost
 
@@ -176,18 +176,39 @@ capped at 1500 mm/s, and braking-distance checks may lower the target. Boost doe
 learned corner limits and cancels for curves, stale position data, recovery, lane changes, or nearby
 traffic. A player already using the full 2000 command range needs no boost.
 
-### Battle weapons
+### Battle weapons and lives
 
-- **Blaster** (1 s cooldown): fires straight from the car's nose in its current heading, as far as the
-  track surface continues. Only the nearest car whose body lies on that line is hit; other lanes and cars
-  around a corner are not. 20 damage; hits cost HP only and do not change speed.
-- **Mine** (4 s cooldown, 2 active): dropped in your lane, arms after 1 s, lives 45 s. A car passing within
-  12 cm in that lane takes 35 damage. Mines also cost HP only and do not stop the car.
-- 100 HP. At 0 the car is destroyed: stopped 3 s with all lights off, then respawns. Kills are counted.
-  Only destruction stops a car; ordinary hits never slow it down.
+- In the `GARAGE` step every player equips **one weapon** and **one powerup**. Weapons are
+  **Sniper**, **Blaster** and **Mine**; powerups are **U-turn**, **Hook**, **Anchor** and **Booster**.
+- **Sniper** (2 s cooldown): fires straight from the car's nose in its current heading, as far as the
+  track surface continues. Only the nearest car in the same lane is hit; other lanes and cars around a
+  corner are not. 34 damage, no energy pool.
+- **Blaster** (hold X): short-range spread weapon, 500 mm. Every car in the cone is hit, including the
+  adjacent lanes; 3 damage per pulse at 5 pulses/s. Holding for 4 s empties the weapon and forces a
+  2.5 s overheat. A short tap only uses part of the energy. At 0 the blaster cannot fire until it has
+  recharged to 20 %. Weapon energy is separate from powerup energy.
+- **Mine** (4 s cooldown, 2 active): dropped in your lane, arms after 1 s, lives 45 s. A car passing
+  within 12 cm in that lane takes 35 damage. Mines cost HP only and do not stop the car.
+- **U-turn** (hold A): starts at 50 % powerup energy. 100 energy drains in 3.5 s, so a full bar gives the
+  full 3.5 s; 50 % gives 1.75 s. Releasing or running empty flips the car forward again. Reverse speed is
+  capped at 500 mm/s and the weapon stays enabled. Lap progress is invalidated.
+- **Hook** (hold A): tethers the nearest car ahead in any lane within 1000 mm (breaks beyond 1200 mm).
+  The victim's commanded speed is reduced to 75 %, never below 300 mm/s. Full energy lasts 5 s. The
+  attacker gets yellow front lights; the victim gets a slow red tail pattern and a visible cable.
+- **Anchor** (press A): stops the car for 2.5 s and costs 50 powerup energy. The car remains vulnerable
+  and can still fire. Useful to let an opponent pass, avoid a mine or block a lane briefly.
+- **Booster** (hold A): raises the target to 160 % of the personal limit, capped at 2000 mm/s. Full energy
+  lasts 2.5 s. It uses the same safety checks as the short straight boost and does not stack with it.
+- AI cars pick one weapon and one powerup at random for each battle and obey the same energy rules.
+- Each car starts with **5 lives**. 100 HP per life. At 0 HP the car is destroyed: stopped 3 s with all
+  lights off, then respawns and loses one life. At 0 lives it is eliminated; the last car with lives
+  remaining wins the battle. Kills are counted.
+- Only destruction stops a car; ordinary hits never slow it down.
 - Hits flash the victim's tail lights red and rumble its controller; a destroyed car gives a clearly stronger,
   longer vibration. The shooter's front lights alternate red/green while firing. A destroyed car stays dark
-  until it respawns.
+  until it respawns; an eliminated car stays dark for the rest of the battle.
+- The race HUD deliberately omits speed, lane, weapon cooldown, powerup energy meters, last lap and the
+  event log. Battle cards show HP, remaining lives and kills; race cards show lap progress and battery.
 
 ### Car light language
 
@@ -203,9 +224,10 @@ traffic. A player already using the full 2000 command range needs no boost.
 
 ### Race mode
 
-Weapons off. Cards show `LAP n / target` and a progress bar; ranking by laps then position. The first car to
-the target gets a "X WINS" banner, the others roll to a stop, and the app returns to pairing.
-`--mode race --laps 10` pre-selects.
+Weapons off; only the powerup slot is shown in the garage and used on the track. Cards show
+`LAP n / target` and a progress bar; ranking by laps then position. The first car to the target gets a
+"X WINS" banner, the others roll to a stop, and the app returns to the lobby. `--mode race --laps 10`
+pre-selects.
 
 By default, AI straight / curve targets are 64% / 52% (Easy), 80% / 68% (Normal), and
 100% / 84% (Hard) of the car speed limit. Hard uses the full limit on straights with enough braking room.
@@ -225,9 +247,8 @@ again. Extreme scales this learned limit with curve radius: tighter lanes need l
 wider curves can be faster. The lower corner limit also brings braking forward on the approach.
 After three fully observed clean turns at at least 90% of the learned limit, AI probes 2% faster,
 bounded by the difficulty's normal limit and, for Extreme, the geometry estimate. Slow traffic does
-not earn a speed increase. The HUD shows the learned reference turn limit and the event feed reports
-adjustments. Learning stays in memory across races; restarting the app or loading/scanning a track
-resets it.
+not earn a speed increase. Adjustments are written to the log; the race HUD stays minimal.
+Learning stays in memory across races; restarting the app or loading/scanning a track resets it.
 
 A reversal invalidates the current lap. The next forward finish-line crossing starts a fresh timed
 lap; it earns no point. A complete forward circuit is required to score again, so U-turns, finish-line
@@ -247,20 +268,24 @@ Leaving a curve and reporting off-track also lowers the learned corner limit onc
 
 ### What the screen shows
 
-- **Map**: car sprites with trails, hit rings, explosions, floating damage; mines pulse once armed; cars that
-  are off the track, on a charger or have lost their link are listed in the map corner.
-- **Cards**: rank badge, driver, status chip (LINING UP / ON THE LINE / DESTROYED /
-  WRONG WAY / OFF TRACK / ON CHARGER), HP or lap progress, speed bar and limit, lane indicator, weapon dials,
-  laps with last and best time, battery row.
-- **Kill feed** in player colours, race clock.
+- **Map**: car sprites with trails, hit rings, explosions, floating damage; mines pulse once armed; hook
+  cables link attacker and victim; cars that are off the track, on a charger or have lost their link are
+  listed in the map corner.
+- **Cards**: rank badge, car name, short driver label, status chip (LINING UP / ON THE LINE /
+  ELIMINATED / DESTROYED / WRONG WAY / OFF TRACK / ON CHARGER / OVERHEAT / BOOSTER / ANCHOR /
+  TURNING / REVERSING), HP + lives + kills in battle, lap progress in race, and a compact battery icon.
+  Speed, lane, weapon cooldown, powerup energy meters, last lap and the event log are deliberately omitted.
+- **Map/clock**: car sprites, trails, hit rings, explosions, floating damage, armed mines, and the
+  off-track/charger list in the corner. The race clock stays in the panel header.
 
 ### Position and Bluetooth diagnostics
 
-The speed row shows **P** (age of the latest usable position/transition update) and **BT** (age of
-any received car notification). During motion, a fresh BT age with an old P age points toward missing
-track readings/localization; both old means no notifications have arrived recently, but does not by
-itself prove radio interference. Stationary cars naturally report fewer track codes.
-`-v` also logs notification-to-game processing delay as `queue_delay`.
+The race HUD no longer shows **P** (position age) and **BT** (notification age) so the cards stay
+minimal. Use `-v` to log AI position/radio telemetry and notification-to-game processing delay
+(`queue_delay`) when diagnosing a weak link; player cars use the same message path. During motion, a
+fresh BT age with an old P age points toward missing track readings/localization; both old means no
+notifications have arrived recently, but does not by itself prove radio interference. Stationary cars
+naturally report fewer track codes.
 
 Bluetooth callbacks enqueue messages; the game thread applies localization, battery logging, and
 scanner updates in order using the original reception timestamps. This keeps disk I/O out of the BLE
@@ -277,10 +302,11 @@ battery voltage sag under acceleration.
 ### Battery and charger
 
 The car reports its single-cell LiPo voltage (polled every 4 s) and a status word with on-track / on-charger /
-battery-low / battery-charged flags. The app shows voltage, an estimated percentage from a resting-voltage
-curve, and the **sag** between idle and under-load voltage: above 0.20 V the cell is tired (`WEAK CELL`) and
-that car is the one most likely to reboot under hard acceleration. `LOW` below 3.68 V idle, `CRITICAL` below
-3.55 V. On the pad: `CHARGING`, then `CHARGED`. Every reading goes to `battery_log.csv`.
+battery-low / battery-charged flags. The lobby and garage show voltage, an estimated percentage from a
+resting-voltage curve, and the **sag** between idle and under-load voltage: above 0.20 V the cell is tired
+(`WEAK CELL`) and that car is the one most likely to reboot under hard acceleration. Race cards show a
+compact percentage with the same warning colours. `LOW` below 3.68 V idle, `CRITICAL` below 3.55 V. On the
+pad: `CHARGING`, then `CHARGED`. Every reading goes to `battery_log.csv`.
 
 ## Options
 
@@ -305,14 +331,15 @@ that car is the one most likely to reboot under hard acceleration. `LOW` below 3
 ## Repository layout
 
 ```
-app.py              state machine: connect -> pairing -> scan -> grid -> ready -> countdown -> race
+app.py              state machine: connect -> cars -> garage -> scan -> grid -> ready -> countdown -> race
+assets/fonts/       Silkscreen pixel font + SIL Open Font License
 anki/protocol.py    message encoders / decoders (verified byte layouts)
 anki/vehicle.py     one car over BLE: discover, connect, reconnect, notifications
 anki/ble_worker.py  BLE on its own thread (pygame's COM apartment breaks bleak on the main thread)
 anki/track.py       piece tables, track scanner, layout, per-car localizer
 anki/data/          offsetInfo.json: location id -> lane / progress table
 game/inputs.py      gamepads and keyboard -> abstract actions
-game/game.py        driving, AI, grid, weapons, laps, damage
+game/game.py        driving, AI, grid, loadouts, weapons, lives, laps, damage
 game/battery.py     battery monitor
 game/render.py      map, HUD, screens
 tools/              small CLI scripts used while reverse-engineering (scan, drive, lane, lights, lap logs)
@@ -329,8 +356,9 @@ Run the offline regression suite without connecting cars:
 ```
 
 Tests cover AI speed planning, traffic, boost, grid retries, lap validation, learning, recovery,
-and telemetry handling. Render demos generate local preview images. Hardware speed and grip still
-need verification on the actual cars and layout.
+battle lives/elimination, weapon loadouts and telemetry handling. Render demos generate local preview
+images, including the lobby, garage and settings. Hardware speed and grip still need verification on
+the actual cars and layout.
 
 ## Protocol notes (firmware 11866, verified on X52 / Mammoth / Dynamo)
 

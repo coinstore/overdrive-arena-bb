@@ -15,13 +15,20 @@ TRIGGER_DEADZONE = 0.04
 AXIS_MAX = 32767.0
 
 # edge-triggered actions
-(STOP, UTURN, FIRE, MINE, LANE_LEFT, LANE_RIGHT, LIMIT_UP, LIMIT_DOWN,
- MENU_LEFT, MENU_RIGHT, SELECT, RELEASE, TOGGLE_AI, READY, BACK, SCAN, TOGGLE_MODE, SECONDARY, BOOST, FAIR_GAME, SCORES) = range(21)
+(STOP, UTURN, FIRE, LANE_LEFT, LANE_RIGHT, LIMIT_UP, LIMIT_DOWN,
+ MENU_LEFT, MENU_RIGHT, MENU_UP, MENU_DOWN, SELECT, RELEASE, TOGGLE_AI, READY, BACK, SCAN,
+ TOGGLE_MODE, SECONDARY, BOOST, FAIR_GAME, SETTINGS) = range(22)
 
-ACTION_NAMES = {STOP: "stop", UTURN: "u-turn", FIRE: "fire", MINE: "mine", LANE_LEFT: "lane left",
+# The powerup button (A / U) keeps its historical name; the equipped powerup
+# decides what it does (U-turn, hook, anchor or booster).
+POWERUP = UTURN
+
+ACTION_NAMES = {STOP: "stop", UTURN: "powerup", FIRE: "fire", LANE_LEFT: "lane left",
                 LANE_RIGHT: "lane right", LIMIT_UP: "limit +", LIMIT_DOWN: "limit -", MENU_LEFT: "menu left",
-                MENU_RIGHT: "menu right", SELECT: "select", RELEASE: "release", TOGGLE_AI: "AI/parked",
-                READY: "ready", BACK: "back", SCAN: "scan track", TOGGLE_MODE: "battle/race mode", SECONDARY: "speed/fair (pairing)", BOOST: "straight boost"}
+                MENU_RIGHT: "menu right", MENU_UP: "menu up", MENU_DOWN: "menu down", SELECT: "select",
+                RELEASE: "release", TOGGLE_AI: "AI/parked", READY: "ready", BACK: "back", SCAN: "scan track",
+                TOGGLE_MODE: "battle/race mode", SECONDARY: "speed/fair (lobby)", BOOST: "straight boost",
+                SETTINGS: "settings"}
 
 
 class InputSource:
@@ -35,6 +42,7 @@ class InputSource:
     def brake(self) -> float: return 0.0
     def steer(self) -> float: return 0.0
     def pressed(self, action: int) -> bool: return False
+    def held(self, action: int) -> bool: return False
     def rumble(self, low: float, high: float, ms: int) -> None: ...
     def close(self) -> None: ...
     def alive(self) -> bool: return True
@@ -45,13 +53,14 @@ class Pad(InputSource):
         STOP: (pygame.CONTROLLER_BUTTON_B,),
         UTURN: (pygame.CONTROLLER_BUTTON_A,),
         FIRE: (pygame.CONTROLLER_BUTTON_X,),
-        MINE: (pygame.CONTROLLER_BUTTON_Y,),
         LANE_LEFT: (pygame.CONTROLLER_BUTTON_LEFTSHOULDER, pygame.CONTROLLER_BUTTON_DPAD_LEFT),
         LANE_RIGHT: (pygame.CONTROLLER_BUTTON_RIGHTSHOULDER, pygame.CONTROLLER_BUTTON_DPAD_RIGHT),
         LIMIT_UP: (pygame.CONTROLLER_BUTTON_DPAD_UP,),
         LIMIT_DOWN: (pygame.CONTROLLER_BUTTON_DPAD_DOWN,),
-        MENU_LEFT: (pygame.CONTROLLER_BUTTON_DPAD_LEFT, pygame.CONTROLLER_BUTTON_LEFTSHOULDER),
-        MENU_RIGHT: (pygame.CONTROLLER_BUTTON_DPAD_RIGHT, pygame.CONTROLLER_BUTTON_RIGHTSHOULDER),
+        MENU_LEFT: (pygame.CONTROLLER_BUTTON_DPAD_LEFT,),
+        MENU_RIGHT: (pygame.CONTROLLER_BUTTON_DPAD_RIGHT,),
+        MENU_UP: (pygame.CONTROLLER_BUTTON_DPAD_UP,),
+        MENU_DOWN: (pygame.CONTROLLER_BUTTON_DPAD_DOWN,),
         SELECT: (pygame.CONTROLLER_BUTTON_A,),
         RELEASE: (pygame.CONTROLLER_BUTTON_B,),
         TOGGLE_AI: (pygame.CONTROLLER_BUTTON_X,),
@@ -70,12 +79,10 @@ class Pad(InputSource):
         self.color_index = (number - 1) % len(PLAYER_COLORS)
         self.color = PLAYER_COLORS[self.color_index]
         self.instance_id = self.ctrl.as_joystick().get_instance_id()
-        # SDL GUID identifies a model, not an individual identical pad. Keep
-        # records under the visible player slot as well, never transient IDs.
-        self.record_id = f"pad:{self.ctrl.as_joystick().get_guid()}:{number}"
         self._now: dict[int, bool] = {}
         self._prev: dict[int, bool] = {}
         self._menu_axis_prev = 0
+        self._menu_y_axis_prev = 0
         self._alive = True
 
     def poll(self, dt: float) -> None:
@@ -88,9 +95,20 @@ class Pad(InputSource):
             self._now[MENU_LEFT if step < 0 else MENU_RIGHT] = True
             self._prev[MENU_LEFT if step < 0 else MENU_RIGHT] = False
         self._menu_axis_prev = step
+        # Vertical stick movement navigates the garage panels; it is separate
+        # from LIMIT_UP/DOWN so it cannot move the speed limit during a race.
+        y = self._axis(pygame.CONTROLLER_AXIS_LEFTY)
+        ystep = -1 if y < -0.6 else (1 if y > 0.6 else 0)
+        if ystep != self._menu_y_axis_prev and ystep != 0:
+            self._now[MENU_UP if ystep < 0 else MENU_DOWN] = True
+            self._prev[MENU_UP if ystep < 0 else MENU_DOWN] = False
+        self._menu_y_axis_prev = ystep
 
     def pressed(self, action: int) -> bool:
         return self._now.get(action, False) and not self._prev.get(action, False)
+
+    def held(self, action: int) -> bool:
+        return self._now.get(action, False)
 
     def _axis(self, a: int) -> float:
         return self.ctrl.get_axis(a) / AXIS_MAX
@@ -131,19 +149,19 @@ class Pad(InputSource):
 
 
 class Keyboard(InputSource):
-    record_id = "keyboard"
     name = "keyboard"
     short = "KB"
     color_index = 5
     color = PLAYER_COLORS[5]
     KEYS = {
         FAIR_GAME: (pygame.K_h,),
-        SCORES: (pygame.K_F2,),
-        STOP: (pygame.K_SPACE,), UTURN: (pygame.K_u,), FIRE: (pygame.K_f, pygame.K_RCTRL), MINE: (pygame.K_g, pygame.K_RSHIFT),
+        SETTINGS: (pygame.K_F2,),
+        STOP: (pygame.K_SPACE,), UTURN: (pygame.K_u,), FIRE: (pygame.K_f, pygame.K_RCTRL),
         LANE_LEFT: (pygame.K_q,), LANE_RIGHT: (pygame.K_e,),
-        LIMIT_UP: (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS, pygame.K_PAGEUP),
-        LIMIT_DOWN: (pygame.K_MINUS, pygame.K_KP_MINUS, pygame.K_PAGEDOWN),
+        LIMIT_UP: (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS, pygame.K_PAGEUP, pygame.K_UP),
+        LIMIT_DOWN: (pygame.K_MINUS, pygame.K_KP_MINUS, pygame.K_PAGEDOWN, pygame.K_DOWN),
         MENU_LEFT: (pygame.K_LEFT, pygame.K_a), MENU_RIGHT: (pygame.K_RIGHT, pygame.K_d),
+        MENU_UP: (pygame.K_UP,), MENU_DOWN: (pygame.K_DOWN,),
         SELECT: (pygame.K_RETURN, pygame.K_KP_ENTER), RELEASE: (pygame.K_BACKSPACE,), TOGGLE_AI: (pygame.K_TAB,),
         READY: (pygame.K_SPACE,),
         SECONDARY: (pygame.K_r,),
@@ -184,6 +202,9 @@ class Keyboard(InputSource):
 
     def pressed(self, action: int) -> bool:
         return any(k in self._down for k in self.KEYS[action])
+
+    def held(self, action: int) -> bool:
+        return any(self._keys[k] for k in self.KEYS[action])
 
 
 def list_pads() -> list[Pad]:

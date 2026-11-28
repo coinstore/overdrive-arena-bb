@@ -83,10 +83,17 @@ class AITests(unittest.TestCase):
             app.keyboard.pressed.side_effect = lambda action: action == I.READY
             app.keyboard.alive.return_value = True
             app.cursors = {}
+            app.garage_cursors = {}
+            app.loadouts = {}
+            app.setup_tab, app.settings_open, app.status = "cars", False, ""
             app.click = click
-            app.renderer = SimpleNamespace(buttons={'race': pygame.Rect(0, 0, 20, 20)})
+            app.renderer = SimpleNamespace(buttons={'next': pygame.Rect(0, 0, 20, 20)})
             app.start_race = Mock()
             app.update_identify_lights = Mock()
+            self.assertTrue(app.pairing_tick())
+            self.assertEqual(app.setup_tab, "garage")
+            app.start_race.assert_not_called()
+            app.click = None
             self.assertTrue(app.pairing_tick())
             app.start_race.assert_called_once()
 

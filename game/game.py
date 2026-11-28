@@ -19,7 +19,6 @@ from anki.vehicle import Vehicle
 from . import inputs as I
 from .battery import BatteryMonitor
 from .colors import ENGINE_COLORS, PLAYER_COLORS, paint_for_model
-from .records import Records
 
 log = logging.getLogger("game")
 
@@ -66,13 +65,29 @@ ACCEL_DOWN = 900
 ACCEL_STOP = 2500
 
 MAX_HP = 100
-# A blaster shot runs straight from the car's nose until it leaves the track.
+BATTLE_LIVES = 5
+WEAPONS = ("sniper", "blaster", "mine")
+POWERUPS = ("uturn", "hook", "anchor", "booster")
+# A sniper shot runs straight from the car's nose until it leaves the track.
 # Targets count as hit when their centre is within half a car body of that line.
-BLASTER_HIT_HALF_WIDTH_MM = 25.0
+SNIPER_HIT_HALF_WIDTH_MM = 25.0
 # Outer lane plus a car body and a little slack; keeps the beam on the track.
+SNIPER_TRACK_CORRIDOR_MM = MAX_ABS_OFFSET + SNIPER_HIT_HALF_WIDTH_MM + 2.0
+SNIPER_COOLDOWN_S = 2.0
+SNIPER_DAMAGE = 34
+# The new blaster is a short-range spread weapon: every car in the cone is hit.
+BLASTER_RANGE_MM = 500.0
+BLASTER_HIT_HALF_WIDTH_MM = 58.0
 BLASTER_TRACK_CORRIDOR_MM = MAX_ABS_OFFSET + BLASTER_HIT_HALF_WIDTH_MM + 2.0
-BLASTER_COOLDOWN_S = 1.0
-BLASTER_DAMAGE = 20
+BLASTER_DAMAGE = 3
+BLASTER_PULSE_INTERVAL_S = 0.2
+BLASTER_MAX_FIRE_S = 4.0
+BLASTER_OVERHEAT_S = 2.5
+BLASTER_ENERGY_MAX = 100.0
+BLASTER_ENERGY_DRAIN = 25.0
+BLASTER_ENERGY_REGEN = 10.0
+BLASTER_REGEN_DELAY_S = 0.8
+BLASTER_MIN_ENERGY = 20.0
 MINE_COOLDOWN_S = 4.0
 MINE_MAX_ACTIVE = 2
 MINE_LIFE_S = 45.0
@@ -80,10 +95,36 @@ MINE_DAMAGE = 35
 MINE_TRIGGER_MM = 120.0
 MINE_LANE_MM = 35.0
 MINE_ARM_S = 1.0
+# Powerups share one energy pool per car, separate from the blaster's weapon energy.
+POWERUP_ENERGY_MAX = 100.0
+POWERUP_ENERGY_REGEN = 10.0
+POWERUP_REGEN_DELAY_S = 1.0
+UTURN_MIN_ENERGY = 50.0
+UTURN_DRAIN = 100.0 / 3.5        # 50 % lasts 1.75 s, 100 % lasts 3.5 s
+UTURN_COOLDOWN_S = 3.0
+UTURN_FLIP_TIMEOUT_S = 2.6
+UTURN_REVERSE_SPEED = 500
+HOOK_MIN_ENERGY = 20.0
+HOOK_DRAIN = 20.0                # 100 % = 5 s
+HOOK_RANGE_MM = 1000.0
+HOOK_BREAK_MM = 1200.0
+HOOK_SLOW_FACTOR = 0.75
+HOOK_MIN_SPEED = 300.0
+ANCHOR_COST = 50.0
+ANCHOR_HOLD_S = 2.5
+BOOSTER_MIN_ENERGY = 25.0
+BOOSTER_DRAIN = 40.0             # 100 % = 2.5 s
+BOOSTER_FACTOR = 1.6
+BOOSTER_MAX_MM_S = 2000.0
+BOOSTER_COOLDOWN_S = 1.5
 DEATH_STOP_S = 3.0
 # Controller feedback: a destroyed car gives a clearly stronger, longer pulse than a normal hit.
 HIT_RUMBLE = (0.9, 0.4, 250)
 DEATH_RUMBLE = (1.0, 0.8, 900)
+# The blaster fires five pulses per second; a full hit pulse would buzz constantly.
+SPRAY_HIT_RUMBLE = (0.55, 0.25, 90)
+BLASTER_FIRE_RUMBLE = (0.25, 0.45, 400)
+BLASTER_OVERHEAT_RUMBLE = (0.9, 0.75, 300)
 # Light feedback timings and battle health bands.
 LIGHT_FIRE_S = 0.35
 LIGHT_HIT_S = 0.5
@@ -129,6 +170,17 @@ class Laser:
 
 
 @dataclass
+class Tether:
+    """A hook cable from the attacker to its victim."""
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    color: tuple
+    until: float
+
+
+@dataclass
 class Effect:
     """Transient visual: 'ring' (hit), 'boom' (destroyed / mine), 'text' (floating damage), 'spawn'."""
     kind: str
@@ -138,6 +190,20 @@ class Effect:
     duration: float
     color: tuple
     text: str = ""
+
+
+@dataclass
+class Loadout:
+    """The one weapon and one powerup a player takes into a battle."""
+    weapon: str = "sniper"
+    powerup: str = "uturn"
+
+    def weapon_name(self) -> str:
+        return {"sniper": "SNIPER", "blaster": "BLASTER", "mine": "MINE"}.get(self.weapon, self.weapon.upper())
+
+    def powerup_name(self) -> str:
+        return {"uturn": "U-TURN", "hook": "HOOK", "anchor": "ANCHOR",
+                "booster": "BOOSTER"}.get(self.powerup, self.powerup.upper())
 
 
 @dataclass
@@ -167,7 +233,7 @@ class CarState:
         self.fair_penalty = 0
         self.source: Optional[I.InputSource] = None
         self.ai = False
-        self.ai_pref = True                 # pairing screen: unclaimed car -> AI (True) or parked (False)
+        self.ai_pref = True                 # lobby: unclaimed car -> AI (True) or parked (False)
         self.ai_difficulty = "normal"
         self.loc: Optional[CarLocalizer] = None
         self.extra_listener = None          # e.g. the track scanner while scanning
@@ -218,10 +284,45 @@ class CarState:
         self.hp = MAX_HP
         self.kills = 0
         self.deaths = 0
+        self.lives = BATTLE_LIVES
+        self.eliminated = False
+        self.loadout = Loadout()
         self.target_offset = 0.0
         self.dead_until = 0.0
         self.fire_ready_at = 0.0
         self.mine_ready_at = 0.0
+        # Blaster energy (interval [0, 100]); other weapons keep their cooldown.
+        self.weapon_energy = BLASTER_ENERGY_MAX
+        self.weapon_energy_empty = False
+        self.weapon_last_use_t = 0.0
+        self.blaster_firing = False
+        self.blaster_fire_started_t = 0.0
+        self.blaster_next_pulse_t = 0.0
+        self.blaster_overheated_until = 0.0
+        self.blaster_rumble_next_t = 0.0
+        # Powerup energy, shared by the equipped powerup.
+        self.powerup_energy = POWERUP_ENERGY_MAX
+        self.powerup_last_use_t = 0.0
+        self.uturn_state = "idle"           # idle | flipping_out | reversing | flipping_back
+        self.uturn_t = 0.0
+        self.uturn_ready_at = 0.0
+        self.uturn_reverse_started_t = 0.0
+        self.uturn_retries = 0
+        self.hook_target: Optional["CarState"] = None
+        self.hooked_until = 0.0
+        self.hooked_by: Optional["CarState"] = None
+        self.hook_light_active = False
+        self.booster_light_active = False
+        self.anchor_until = 0.0
+        self.anchor_active = False
+        self.booster_active = False
+        self.booster_ready_at = 0.0
+        self.ai_blaster_until = 0.0
+        self.ai_blaster_next_t = 0.0
+        self.ai_hook_until = 0.0
+        self.ai_hook_next_t = 0.0
+        self.ai_booster_until = 0.0
+        self.ai_booster_next_t = 0.0
         self.ai_next_lane_t = 0.0
         self.ai_uturn_t = 0.0
         self.ai_telemetry_t = 0.0
@@ -303,7 +404,7 @@ class CarState:
         return "parked"
 
     def cycle_ai(self) -> None:
-        """Pairing selection: parked -> easy -> normal -> hard -> extreme -> parked."""
+        """Lobby selection: parked -> easy -> normal -> hard -> extreme -> parked."""
         if not self.ai_pref:
             self.ai_pref, self.ai_difficulty = True, "easy"
         elif self.ai_difficulty == "extreme":
@@ -448,7 +549,11 @@ class CarState:
 
     # ---- status ----
     def is_dead(self, now: float) -> bool:
-        return now < self.dead_until
+        return self.eliminated or now < self.dead_until
+
+    def powerup_busy(self) -> bool:
+        return (self.uturn_state != "idle" or self.hook_target is not None
+                or self.booster_active or self.anchor_active)
 
     def speed_sent(self) -> int:
         return self._last_speed_sent
@@ -460,8 +565,13 @@ class CarState:
     def command_speed(self, desired: float, now: float, force: bool = False) -> None:
         if now < self.dead_until:
             speed = 0
+        elif self.anchor_active and now < self.anchor_until:
+            speed = 0
         else:
             speed = int(round(desired))
+        # A hook slows the victim's commanded target, never below crawl speed.
+        if speed > 0 and now < self.hooked_until:
+            speed = int(round(max(HOOK_MIN_SPEED, speed * HOOK_SLOW_FACTOR)))
         speed = max(0, min(2000, self.race_speed_limit, speed))
         speed = max(0, speed - self.fair_penalty)
         accel = ACCEL_STOP if speed == 0 else (ACCEL_DOWN if speed < self._last_speed_sent else ACCEL_UP)
@@ -612,6 +722,9 @@ class CarState:
     def lights_idle(self) -> None:
         self._clear_light_events()
         self._lights_dark = False
+        self.hook_light_active = False
+        self.booster_light_active = False
+        self.hooked_until = 0.0
         self._health_light_state = ("steady", self.engine_rgb)
         self._send(P.lights_off(0x0F))
         r, g, b = self.engine_rgb
@@ -628,6 +741,9 @@ class CarState:
         """Player-colour roof blink for the 3-2-1 countdown."""
         self._clear_light_events()
         self._lights_dark = False
+        self.hook_light_active = False
+        self.booster_light_active = False
+        self.hooked_until = 0.0
         self._health_light_state = None
         self._send(P.lights_off(0x0F))
         self._send(P.engine_flash(*self.engine_rgb, cycles=10))
@@ -665,7 +781,7 @@ class CarState:
             self._send(P.engine_color(*self.engine_rgb))
 
     def lights_fire(self, now: float) -> None:
-        if self._lights_dark:
+        if self._lights_dark or now < self.front_until:
             return
         self._send(P.lights_on(P.LIGHT_FRONTLIGHTS))
         self.front_until = now + LIGHT_FIRE_S
@@ -675,7 +791,7 @@ class CarState:
         if self._lights_dark:
             return
         priority = 3 if mine else 2
-        if now < self.tail_until and priority < self.tail_priority:
+        if now < self.tail_until and priority <= self.tail_priority:
             return
         self.tail_priority = priority
         self.tail_until = now + (LIGHT_MINE_HIT_S if mine else LIGHT_HIT_S)
@@ -685,9 +801,56 @@ class CarState:
             pattern = [(P.LC_TAIL, P.EFFECT_FLASH, 0, 5, 20)]
         self._send(P.lights_pattern(pattern))
 
+    def _front_pattern(self, red: int, green: int, effect: int = P.EFFECT_STEADY) -> None:
+        """Always send both front channels: a missing one keeps its old colour."""
+        self._send(P.lights_pattern([
+            (P.LC_FRONTL, effect, red, red, 0),
+            (P.LC_FRONTR, effect, green, green, 0),
+        ]))
+
+    def lights_hook_attacker(self, on: bool) -> None:
+        """Yellow front lights while the hook is attached (red + green)."""
+        if self._lights_dark or self.hook_light_active == on:
+            return
+        self.hook_light_active = on
+        if on:
+            self._front_pattern(P.MAX_LIGHT_INTENSITY, P.MAX_LIGHT_INTENSITY)
+        elif not self.front_until and not self.booster_light_active:
+            self._front_pattern(0, 0)
+
+    def lights_booster(self, on: bool) -> None:
+        """Green front lights while the booster is active."""
+        if self._lights_dark or self.booster_light_active == on:
+            return
+        self.booster_light_active = on
+        if on:
+            self._front_pattern(0, P.MAX_LIGHT_INTENSITY)
+        elif not self.front_until and not self.hook_light_active:
+            self._front_pattern(0, 0)
+
+    def lights_hooked(self, now: float) -> None:
+        """A slow red tail pattern while the hook is attached; hits still win."""
+        if self._lights_dark:
+            return
+        if now < self.tail_until and self.tail_priority >= 1:
+            return
+        self.tail_priority = 1
+        self.tail_until = now + 0.7
+        self._send(P.lights_pattern([(P.LC_TAIL, P.EFFECT_FLASH, 0, 5, 2)]))
+
+    def lights_unhook(self) -> None:
+        self.hooked_until = 0.0
+        if self.tail_priority <= 1:
+            self.tail_priority = 0
+            self.tail_until = 0.0
+            self._send(P.lights_pattern([(P.LC_TAIL, P.EFFECT_STEADY, 0, 0, 0)]))
+
     def lights_dead(self) -> None:
         self._clear_light_events()
         self._lights_dark = True
+        self.hook_light_active = False
+        self.booster_light_active = False
+        self.hooked_until = 0.0
         self._health_light_state = ("off", self.engine_rgb)
         self._send(P.lights_off(0x0F))
         self._send_patterns(self._all_lights_off_channels())
@@ -696,11 +859,25 @@ class CarState:
         """Expire the short fire/tail overlays."""
         if self.front_until and now >= self.front_until:
             self.front_until = 0.0
-            self._send(P.lights_off(P.LIGHT_FRONTLIGHTS))
+            if self._lights_dark:
+                pass
+            elif self.hook_light_active:
+                self._front_pattern(P.MAX_LIGHT_INTENSITY, P.MAX_LIGHT_INTENSITY)
+            elif self.booster_light_active:
+                self._front_pattern(0, P.MAX_LIGHT_INTENSITY)
+            else:
+                self._send(P.lights_off(P.LIGHT_FRONTLIGHTS))
         if self.tail_until and now >= self.tail_until:
             self.tail_until = 0.0
-            self.tail_priority = 0
-            self._send(P.lights_pattern([(P.LC_TAIL, P.EFFECT_STEADY, 0, 0, 0)]))
+            if self._lights_dark:
+                self.tail_priority = 0
+            elif self.hooked_until > now:
+                self.tail_priority = 1
+                self.tail_until = now + 0.7
+                self._send(P.lights_pattern([(P.LC_TAIL, P.EFFECT_FLASH, 0, 5, 2)]))
+            else:
+                self.tail_priority = 0
+                self._send(P.lights_pattern([(P.LC_TAIL, P.EFFECT_STEADY, 0, 0, 0)]))
 
     def lights_identify(self, on: bool) -> None:
         self._send(P.lights_on(P.LIGHT_FRONTLIGHTS) if on else P.lights_off(P.LIGHT_FRONTLIGHTS))
@@ -732,6 +909,7 @@ class Game:
         self.ai_speed = ai_speed
         self.mines: list[Mine] = []
         self.lasers: list[Laser] = []
+        self.tethers: list[Tether] = []
         self.fx: list[Effect] = []
         self.events: deque[tuple[float, str, tuple]] = deque(maxlen=8)
         self.race_start_t: Optional[float] = None
@@ -748,15 +926,11 @@ class Game:
         self.race_speed_limit = 2000
         self.finish_t = 0.0
         self.running = False
-        self.records = Records()
+        self._battle_contenders = 0
         for c in cars:
             c.set_track(track)
 
     # ---- lifecycle ----
-    @property
-    def records_mode(self) -> str:
-        return "race_fair" if self.mode == "race" and self.fair_game else self.mode
-
     def update_fair_penalties(self) -> None:
         for car in self.cars:
             car.fair_penalty = 0
@@ -779,6 +953,7 @@ class Game:
         for c in self.cars:
             c.set_track(track)
         self.mines.clear()
+        self.tethers.clear()
 
     # ---- starting grid --------------------------------------------------
     def assign_roles(self) -> None:
@@ -799,6 +974,12 @@ class Game:
         participants = sum(1 for c in self.cars if c.participates() and self.track is not None)
         lane_order = grid_lane_order(participants)
         lane_i = 0
+        for c in self.cars:
+            c.hp = MAX_HP
+            c.lives = BATTLE_LIVES
+            c.eliminated = False
+            c.dead_until = 0.0
+            c.kills = c.deaths = 0
         for c in self.cars:
             c.lights_idle()
             if not c.participates() or self.track is None:
@@ -827,6 +1008,12 @@ class Game:
             c.cruise_speed = 0.0
             c.manual_reverse = False
             c.last_uturn_t = 0.0
+            c.uturn_state = "idle"
+            c.uturn_retries = 0
+            c.hook_target = None
+            c.hooked_until = 0.0
+            c.anchor_active = False
+            c.booster_active = False
             c.set_lane(c.grid_lane, now)
             c._last_lane_sent = 999.0     # force a lane command once the car is localized
             if c.car.connected and not c.charging:
@@ -1125,6 +1312,9 @@ class Game:
         self.mines.clear()
         self.lasers.clear()
         self.fx.clear()
+        self._battle_contenders = sum(
+            1 for c in self.cars
+            if c.participates() and c.car.connected and not c.charging)
         for c in self.cars:
             if c.grid_state == "placed" and c.loc is not None:
                 # The countdown is longer than the AI freshness window; the
@@ -1134,6 +1324,41 @@ class Game:
                 c.start_bar_locked = False
             c.hp = MAX_HP
             c.kills = c.deaths = c.laps = 0
+            c.lives = BATTLE_LIVES
+            c.eliminated = False
+            c.fire_ready_at = c.mine_ready_at = 0.0
+            c.weapon_energy = BLASTER_ENERGY_MAX
+            c.weapon_energy_empty = False
+            c.weapon_last_use_t = 0.0
+            c.blaster_firing = False
+            c.blaster_fire_started_t = 0.0
+            c.blaster_next_pulse_t = 0.0
+            c.blaster_overheated_until = 0.0
+            c.blaster_rumble_next_t = 0.0
+            c.powerup_energy = POWERUP_ENERGY_MAX
+            c.powerup_last_use_t = 0.0
+            c.uturn_state = "idle"
+            c.uturn_t = 0.0
+            c.uturn_ready_at = 0.0
+            c.uturn_reverse_started_t = 0.0
+            c.uturn_retries = 0
+            c.hook_target = None
+            c.hooked_until = 0.0
+            c.hooked_by = None
+            c.hook_light_active = False
+            c.booster_light_active = False
+            c.anchor_until = 0.0
+            c.anchor_active = False
+            c.booster_active = False
+            c.booster_ready_at = 0.0
+            c.ai_blaster_until = 0.0
+            c.ai_blaster_next_t = 0.0
+            c.ai_hook_until = 0.0
+            c.ai_hook_next_t = 0.0
+            c.ai_booster_until = 0.0
+            c.ai_booster_next_t = 0.0
+            if c.ai:
+                c.loadout = Loadout(weapon=random.choice(WEAPONS), powerup=random.choice(POWERUPS))
             c.last_lap_s = c.best_lap_s = None
             c.race_finish_s = None
             c.lap_start_t = None
@@ -1161,6 +1386,12 @@ class Game:
             c.cruise_speed = 0.0
             c.manual_reverse = False
             c.last_uturn_t = 0.0
+            c.uturn_state = "idle"
+            c.uturn_retries = 0
+            c.hook_target = None
+            c.hooked_until = 0.0
+            c.anchor_active = False
+            c.booster_active = False
             if (c.grid_state == "placed" and c.map_position_known() and c.loc is not None
                     and c.loc.direction > 0 and c.loc.index == 0
                     and self.track.start_bar_frac <= c.loc.frac < self.track.start_bar_frac + 0.1):
@@ -1202,6 +1433,12 @@ class Game:
             c.grid_runup_pending = False
             c.manual_reverse = False
             c.last_uturn_t = 0.0
+            c.uturn_state = "idle"
+            c.uturn_retries = 0
+            c.hook_target = None
+            c.hooked_until = 0.0
+            c.anchor_active = False
+            c.booster_active = False
         for c in self.cars:
             c.hard_stop(now)
             c.lights_idle()
@@ -1223,7 +1460,8 @@ class Game:
         if self.mode == "race":
             return sorted(self.cars, key=lambda c: (-c.laps, c.race_finish_s if c.race_finish_s is not None else float("inf"),
                                                     -progress(c), c.index))
-        return sorted(self.cars, key=lambda c: (-c.kills, c.deaths, -c.laps, c.index))
+        return sorted(self.cars, key=lambda c: (not c.participates(), -c.lives, -c.kills,
+                                                c.deaths, -c.laps, c.index))
 
     def _track_laps(self, c: CarState, now: float) -> None:
         """Only credit a complete forward circuit between clean finish-line crossings."""
@@ -1368,7 +1606,6 @@ class Game:
     def _complete_lap(self, c: CarState, crossing_t: float, lap: float) -> None:
         c.laps += 1
         c.last_lap_s = lap
-        self.records.record(self.track, self.records_mode, c, "lap", lap)
         if c.best_lap_s is None or lap < c.best_lap_s:
             c.best_lap_s = lap
             self.log(f"{c.name} lap {c.laps}: {lap:.2f}s (best)", c.color)
@@ -1376,7 +1613,6 @@ class Game:
             self.log(f"{c.name} lap {c.laps}: {lap:.2f}s", c.color)
         if self.mode == "race" and c.laps >= self.lap_target and c.race_finish_s is None and self.race_start_t is not None:
             c.race_finish_s = crossing_t - self.race_start_t
-            self.records.record(self.track, self.records_mode, c, "race", c.race_finish_s, self.lap_target)
         if self.mode == "race" and c.laps >= self.lap_target and (self.winner is None or crossing_t < self.finish_t):
             self.winner = c
             self.finish_t = crossing_t
@@ -1536,6 +1772,7 @@ class Game:
         if self.running and self.track is not None:
             self._reconcile_vehicle_positions(now)
         self.fx = [e for e in self.fx if now - e.t0 < e.duration]
+        self.tethers.clear()
         self.update_fair_penalties()
         for c in self.cars:
             c.tick_lights(now)
@@ -1574,6 +1811,12 @@ class Game:
             if c.hp <= 0 and not c.is_dead(now):
                 c.hp = MAX_HP
                 c.lights_idle()
+                c.uturn_state = "idle"
+                c.uturn_retries = 0
+                c.manual_reverse = False
+                c.anchor_active = False
+                c.booster_active = False
+                c.hook_target = None
                 self.effect("spawn", c.world(), c.color, 0.8)
                 self.log(f"{c.name} respawned", c.color)
                 if c.ai:
@@ -1589,6 +1832,7 @@ class Game:
                 c.command_speed(0, now)
             if not c.ai_track_recovery:
                 c.apply_lane(now)
+            self._tick_car_energy(c, now, dt)
         self._resolve_mines(now)
         self.lasers = [l for l in self.lasers if l.until > now]
         self.mines = [m for m in self.mines if now - m.placed_at < MINE_LIFE_S]
@@ -1624,15 +1868,45 @@ class Game:
             c.max_speed = max(200, c.max_speed - 100)
         if src.pressed(I.BOOST):
             self.request_boost(c, now)
-        if src.pressed(I.UTURN):
-            # Variant B: a press deliberately switches to driving against the
-            # track direction; the next press hands control back to the
-            # automatic wrong-way correction.
-            c.u_turn()
-            c.last_uturn_t = now
-            c.manual_reverse = not c.manual_reverse
-            self.log(f"{c.name}: reverse mode {'on' if c.manual_reverse else 'off'}", c.color)
-        correcting_wrong_way = self.wrong_way(c) and not c.manual_reverse
+
+        self.update_anchor(c, now)
+        # Real input sources return a bool.  Mocks used by the offline tests
+        # may return a Mock; only an explicit True counts as held.
+        def held(action: int) -> bool:
+            try:
+                return src.held(action) is True
+            except AttributeError:
+                return False
+
+        held_powerup = held(I.POWERUP)
+        if c.loadout.powerup == "uturn":
+            self.update_uturn(c, held_powerup, now, dt)
+        elif c.loadout.powerup == "hook":
+            self.update_hook(c, held_powerup, now, dt)
+        elif c.loadout.powerup == "anchor":
+            if src.pressed(I.POWERUP):
+                self.start_anchor(c, now)
+        elif c.loadout.powerup == "booster":
+            self.update_booster(c, held_powerup, now, dt)
+
+        if c.loadout.weapon == "blaster":
+            self.update_blaster(c, held(I.FIRE), now, dt)
+        elif c.loadout.weapon == "mine":
+            if src.pressed(I.FIRE):
+                self.drop_mine(c, now)
+        else:
+            if src.pressed(I.FIRE):
+                self.fire_sniper(c, now)
+
+        if c.anchor_active:
+            c.command_speed(0, now)
+            if src.pressed(I.STOP):
+                c.anchor_active = False
+                c.hard_stop(now)
+            return
+
+        correcting_wrong_way = (self.wrong_way(c) and not c.manual_reverse
+                                and c.uturn_state == "idle")
         if src.pressed(I.STOP):
             c.hard_stop(now)
             src.rumble(0.8, 0.8, 150)
@@ -1652,6 +1926,12 @@ class Game:
             if down > 0 or c.cruise_speed <= 0:
                 c.boost_until = 0.0
             target = self.boost_target(c, c.cruise_speed, now) if c.cruise_speed > 0 else 0.0
+            if c.booster_active:
+                target = max(target, self.booster_target(c))
+            if c.manual_reverse or c.uturn_state != "idle":
+                # A reversing or flipping car stays controllable, but only at a safe speed.
+                target = min(target, UTURN_REVERSE_SPEED)
+                c.boost_until = 0.0
             if correcting_wrong_way:
                 # A slow car flips reliably; the driver's own reverse mode is
                 # not capped.
@@ -1670,10 +1950,6 @@ class Game:
             c.u_turn()
             c.last_uturn_t = now
             self.log(f"{c.name} turns around (wrong way)", c.color)
-        if src.pressed(I.FIRE):
-            self.fire(c, now)
-        if src.pressed(I.MINE):
-            self.drop_mine(c, now)
 
     def ai_speed_ceiling(self, c: CarState) -> float:
         if c.ai_difficulty == "extreme" and c.extreme_max_speed is not None:
@@ -1943,6 +2219,7 @@ class Game:
             # gets one 1.5 s search at 300 mm/s. Never keep driving blindly.
             can_probe = available and loc.on_track and (c.speed_sent() > 0 or not c.ai_has_driven)
             c.ai_track_recovery = "searching" if can_probe else "waiting"
+            self.cancel_powerups(c)
             c._prev_progress = c.lap_start_t = None
             c._lap_travel = 0.0
             c.ai_learning_piece = None
@@ -1972,10 +2249,28 @@ class Game:
                 self.log(f"{c.name} turns around (wrong way)", c.color)
             c.command_speed(min(self.ai_target_speed(c), 300), now)
             return
+        self.update_anchor(c, now)
+        if c.anchor_active:
+            c.command_speed(0, now)
+            return
+        if c.loadout.powerup == "hook":
+            ahead = self.nearest_ahead(c, now, HOOK_RANGE_MM)
+            if ahead is not None and now >= c.ai_hook_next_t:
+                c.ai_hook_until = now + random.uniform(1.0, 2.0)
+                c.ai_hook_next_t = c.ai_hook_until + random.uniform(1.0, 2.5)
+            self.update_hook(c, now < c.ai_hook_until, now, dt)
+        elif c.loadout.powerup == "booster":
+            if (now >= c.ai_booster_next_t and c.powerup_energy >= BOOSTER_MIN_ENERGY
+                    and self._boost_clear(c, now)):
+                c.ai_booster_until = now + random.uniform(1.0, 2.0)
+                c.ai_booster_next_t = c.ai_booster_until + random.uniform(2.0, 4.0)
+            self.update_booster(c, now < c.ai_booster_until, now, dt)
         target = self.ai_target_speed(c)
         if c.ai_difficulty in ("hard", "extreme"):
             self.request_boost(c, now)
         target = self.boost_target(c, target, now)
+        if c.booster_active:
+            target = max(target, self.booster_target(c))
         if self.mode == "race":
             target = self.ai_race_traffic(c, target, now)
             # A newly selected inside lane can have a tighter curve speed limit.
@@ -2005,13 +2300,35 @@ class Game:
         if not self.weapons_enabled:
             return
         reaction = AI_LEVELS[c.ai_difficulty][2]
-        if now > c.fire_ready_at and random.random() < dt * 0.6 * reaction and self.target_ahead(c) is not None:
-            self.fire(c, now)
-        if now > c.mine_ready_at and random.random() < dt * 0.06 * reaction:
-            self.drop_mine(c, now)
+        if c.loadout.weapon == "mine":
+            if now > c.mine_ready_at and random.random() < dt * 0.06 * reaction:
+                self.drop_mine(c, now)
+        elif c.loadout.weapon == "sniper":
+            if (now > c.fire_ready_at and random.random() < dt * 0.6 * reaction
+                    and self.target_ahead(c) is not None):
+                self.fire_sniper(c, now)
+        else:
+            if self.targets_in_cone(c):
+                if now >= c.ai_blaster_next_t:
+                    c.ai_blaster_until = now + random.uniform(0.4, 1.2) * min(1.5, reaction)
+                    c.ai_blaster_next_t = c.ai_blaster_until + random.uniform(0.8, 2.0) / max(0.5, reaction)
+                self.update_blaster(c, now < c.ai_blaster_until, now, dt)
+            else:
+                self.update_blaster(c, False, now, dt)
 
     # ---- weapons ----
-    def _shot_line(self, shooter: CarState) -> Optional[tuple[tuple[float, float], float, float, float, tuple[float, float]]]:
+    def use_weapon(self, shooter: CarState, now: float) -> None:
+        """Trigger the single equipped weapon (X)."""
+        if shooter.loadout.weapon == "mine":
+            self.drop_mine(shooter, now)
+        elif shooter.loadout.weapon == "blaster":
+            self.update_blaster(shooter, True, now, 0.0)
+        else:
+            self.fire_sniper(shooter, now)
+
+    def _shot_line(self, shooter: CarState, corridor: float,
+                   max_range: Optional[float] = None
+                   ) -> Optional[tuple[tuple[float, float], float, float, float, tuple[float, float]]]:
         """Origin, direction, usable length and end point of a straight shot."""
         if self.track is None or not shooter.localized():
             return None
@@ -2019,11 +2336,15 @@ class Game:
         if p0 is None:
             return None
         a = shooter.loc.heading()  # type: ignore[union-attr]
-        length, x1, y1 = self.track.beam_end(p0[0], p0[1], a, BLASTER_TRACK_CORRIDOR_MM)
+        length, x1, y1 = self.track.beam_end(p0[0], p0[1], a, corridor)
+        if max_range is not None and length > max_range:
+            length = max_range
+            x1 = p0[0] + math.cos(a) * length
+            y1 = p0[1] + math.sin(a) * length
         return p0, math.cos(a), math.sin(a), length, (x1, y1)
 
     def _target_on_line(self, shooter: CarState, p0: tuple[float, float], fx: float, fy: float,
-                        length: float) -> Optional[tuple[CarState, float]]:
+                        length: float, half_width: float) -> Optional[tuple[CarState, float]]:
         best = None
         for o in self.cars:
             if o is shooter or not o.localized() or o.hp <= 0:
@@ -2036,39 +2357,332 @@ class Game:
             if ahead <= 0 or ahead > length:
                 continue
             lateral = -dx * fy + dy * fx
-            if abs(lateral) > BLASTER_HIT_HALF_WIDTH_MM:
+            if abs(lateral) > half_width:
                 continue
             if best is None or ahead < best[1]:
                 best = (o, ahead)
         return best
 
     def target_ahead(self, shooter: CarState) -> Optional[tuple[CarState, float]]:
-        """Nearest car on the straight shot line from the car's nose."""
-        shot = self._shot_line(shooter)
+        """Nearest car on the sniper's straight line, in its own lane."""
+        shot = self._shot_line(shooter, SNIPER_TRACK_CORRIDOR_MM)
         if shot is None:
             return None
         p0, fx, fy, length, _end = shot
-        return self._target_on_line(shooter, p0, fx, fy, length)
+        return self._target_on_line(shooter, p0, fx, fy, length, SNIPER_HIT_HALF_WIDTH_MM)
+
+    def targets_in_cone(self, shooter: CarState) -> list[tuple[CarState, float]]:
+        """Every car inside the blaster's short, wide cone (nearest first)."""
+        shot = self._shot_line(shooter, BLASTER_TRACK_CORRIDOR_MM, BLASTER_RANGE_MM)
+        if shot is None:
+            return []
+        p0, fx, fy, length, _end = shot
+        found = []
+        for o in self.cars:
+            if o is shooter or not o.localized() or o.hp <= 0:
+                continue
+            p1 = o.world()
+            if p1 is None:
+                continue
+            dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+            ahead = dx * fx + dy * fy
+            if ahead <= 0 or ahead > length:
+                continue
+            lateral = -dx * fy + dy * fx
+            if abs(lateral) <= BLASTER_HIT_HALF_WIDTH_MM:
+                found.append((o, ahead))
+        found.sort(key=lambda item: item[1])
+        return found
 
     def fire(self, shooter: CarState, now: float) -> None:
+        """Trigger the equipped weapon once (used by AI and tests)."""
+        if shooter.loadout.weapon == "mine":
+            self.drop_mine(shooter, now)
+        elif shooter.loadout.weapon == "blaster":
+            self.fire_blaster_pulse(shooter, now)
+        else:
+            self.fire_sniper(shooter, now)
+
+    def fire_sniper(self, shooter: CarState, now: float) -> None:
         if not self.weapons_enabled or now < shooter.fire_ready_at or shooter.is_dead(now) or not shooter.localized():
             return
-        shooter.fire_ready_at = now + BLASTER_COOLDOWN_S
+        shooter.fire_ready_at = now + SNIPER_COOLDOWN_S
         shooter.lights_fire(now)
-        shot = self._shot_line(shooter)
+        shot = self._shot_line(shooter, SNIPER_TRACK_CORRIDOR_MM)
         if shot is None:
             return
         p0, fx, fy, length, end = shot
-        target = self._target_on_line(shooter, p0, fx, fy, length)
+        target = self._target_on_line(shooter, p0, fx, fy, length, SNIPER_HIT_HALF_WIDTH_MM)
         if target is not None:
             victim, _d = target
             p1 = victim.world() or p0
             self.lasers.append(Laser(p0[0], p0[1], p1[0], p1[1], shooter.color, now + 0.25, True))
-            self.damage(victim, shooter, BLASTER_DAMAGE, now)
+            self.damage(victim, shooter, SNIPER_DAMAGE, now)
             if shooter.source:
                 shooter.source.rumble(0.2, 0.7, 120)
         else:
             self.lasers.append(Laser(p0[0], p0[1], end[0], end[1], shooter.color, now + 0.15, False))
+
+    def _blaster_ready(self, c: CarState, now: float) -> bool:
+        if now < c.blaster_overheated_until:
+            return False
+        if c.weapon_energy <= 0:
+            return False
+        if c.weapon_energy_empty and c.weapon_energy < BLASTER_MIN_ENERGY:
+            return False
+        return True
+
+    def fire_blaster_pulse(self, shooter: CarState, now: float) -> None:
+        if (not self.weapons_enabled or shooter.is_dead(now) or not shooter.localized()
+                or not self._blaster_ready(shooter, now) or now < shooter.blaster_next_pulse_t):
+            return
+        shooter.blaster_next_pulse_t = now + BLASTER_PULSE_INTERVAL_S
+        shooter.weapon_last_use_t = now
+        shooter.lights_fire(now)
+        shot = self._shot_line(shooter, BLASTER_TRACK_CORRIDOR_MM, BLASTER_RANGE_MM)
+        if shot is None:
+            return
+        p0, _fx, _fy, _length, end = shot
+        targets = self.targets_in_cone(shooter)
+        for victim, _d in targets:
+            p1 = victim.world() or p0
+            self.lasers.append(Laser(p0[0], p0[1], p1[0], p1[1], shooter.color, now + 0.18, True))
+            self.damage(victim, shooter, BLASTER_DAMAGE, now, spray=True)
+        if not targets:
+            self.lasers.append(Laser(p0[0], p0[1], end[0], end[1], shooter.color, now + 0.12, False))
+
+    def _overheat_blaster(self, c: CarState, now: float) -> None:
+        c.blaster_firing = False
+        c.weapon_energy = 0.0
+        c.weapon_energy_empty = True
+        c.blaster_overheated_until = max(c.blaster_overheated_until, now + BLASTER_OVERHEAT_S)
+        if c.source is not None:
+            c.source.rumble(*BLASTER_OVERHEAT_RUMBLE)
+        self.log(f"{c.name}: blaster overheated", WARN_COLOR)
+
+    def update_blaster(self, shooter: CarState, held: bool, now: float, dt: float) -> None:
+        """Hold-to-fire blaster with energy drain, a hard 4 s burst and overheat."""
+        if shooter.loadout.weapon != "blaster":
+            return
+        can_fire = (held and self.weapons_enabled and not shooter.is_dead(now)
+                    and not shooter.charging and shooter.localized()
+                    and self._blaster_ready(shooter, now))
+        if not can_fire:
+            shooter.blaster_firing = False
+            return
+        if not shooter.blaster_firing:
+            shooter.blaster_firing = True
+            shooter.blaster_fire_started_t = now
+            shooter.blaster_next_pulse_t = now
+            if shooter.source is not None:
+                shooter.source.rumble(*BLASTER_FIRE_RUMBLE)
+            shooter.blaster_rumble_next_t = now + 0.35
+        if now - shooter.blaster_fire_started_t >= BLASTER_MAX_FIRE_S:
+            if shooter.blaster_overheated_until <= now:
+                self._overheat_blaster(shooter, now)
+            return
+        shooter.weapon_energy = max(0.0, shooter.weapon_energy - BLASTER_ENERGY_DRAIN * dt)
+        shooter.weapon_last_use_t = now
+        if shooter.weapon_energy <= 0:
+            self._overheat_blaster(shooter, now)
+            return
+        if shooter.source is not None and now >= shooter.blaster_rumble_next_t:
+            shooter.source.rumble(*BLASTER_FIRE_RUMBLE)
+            shooter.blaster_rumble_next_t = now + 0.35
+        self.fire_blaster_pulse(shooter, now)
+
+    def _tick_car_energy(self, c: CarState, now: float, dt: float) -> None:
+        """Regenerate the blaster and powerup pools while they are not in use."""
+        if c.loadout.weapon == "blaster" and not c.blaster_firing:
+            if now - c.weapon_last_use_t >= BLASTER_REGEN_DELAY_S:
+                c.weapon_energy = min(BLASTER_ENERGY_MAX,
+                                      c.weapon_energy + BLASTER_ENERGY_REGEN * dt)
+        if c.weapon_energy >= BLASTER_MIN_ENERGY:
+            c.weapon_energy_empty = False
+        if not c.powerup_busy():
+            if now - c.powerup_last_use_t >= POWERUP_REGEN_DELAY_S:
+                c.powerup_energy = min(POWERUP_ENERGY_MAX,
+                                       c.powerup_energy + POWERUP_ENERGY_REGEN * dt)
+
+    # ---- powerups ----
+    def _uturn_allowed(self, c: CarState, now: float) -> bool:
+        return (c.uturn_state == "idle" and now >= c.uturn_ready_at
+                and c.powerup_energy >= UTURN_MIN_ENERGY and c.speed_sent() > 0
+                and not c.is_dead(now) and not c.charging and not c.anchor_active
+                and c.localized() and c.loc is not None and c.loc.direction > 0)
+
+    def update_uturn(self, c: CarState, held: bool, now: float, dt: float) -> None:
+        """Hold the powerup to reverse; releasing drains to zero and flips back."""
+        if c.loadout.powerup != "uturn":
+            return
+        if c.uturn_state == "idle":
+            if held and self._uturn_allowed(c, now):
+                c.u_turn()
+                c.uturn_state = "flipping_out"
+                c.uturn_t = now
+                c.uturn_retries = 0
+                c.manual_reverse = True
+                c.last_uturn_t = now
+                self.log(f"{c.name}: reversing", c.color)
+        elif c.uturn_state == "flipping_out":
+            if c.loc is not None and c.loc.direction < 0:
+                c.uturn_state = "reversing"
+                c.uturn_reverse_started_t = now
+                c.uturn_t = now
+                c.uturn_retries = 0
+            elif now - c.uturn_t > UTURN_FLIP_TIMEOUT_S:
+                c.uturn_retries += 1
+                if c.uturn_retries > 2:
+                    c.uturn_state = "idle"
+                    c.manual_reverse = False
+                    c.uturn_ready_at = now + UTURN_COOLDOWN_S
+                    self.log(f"{c.name}: U-turn did not engage", WARN_COLOR)
+                else:
+                    c.u_turn()
+                    c.uturn_t = now
+        elif c.uturn_state == "reversing":
+            c.powerup_energy = max(0.0, c.powerup_energy - UTURN_DRAIN * dt)
+            c.powerup_last_use_t = now
+            if not held or c.powerup_energy <= 0 or c.is_dead(now):
+                c.uturn_state = "flipping_back"
+                c.u_turn()
+                c.uturn_t = now
+                c.manual_reverse = False
+                self.log(f"{c.name}: turning forward", c.color)
+        elif c.uturn_state == "flipping_back":
+            if c.loc is not None and c.loc.direction > 0:
+                c.uturn_state = "idle"
+                c.uturn_ready_at = now + UTURN_COOLDOWN_S
+                c.manual_reverse = False
+                c.last_uturn_t = now
+            elif now - c.uturn_t > UTURN_FLIP_TIMEOUT_S:
+                c.uturn_retries += 1
+                if c.uturn_retries > 2:
+                    c.uturn_state = "idle"
+                    c.manual_reverse = False
+                    c.uturn_ready_at = now + UTURN_COOLDOWN_S
+                    self.log(f"{c.name}: U-turn return failed", WARN_COLOR)
+                else:
+                    c.u_turn()
+                    c.uturn_t = now
+
+    def _hook_gap(self, owner: CarState, target: CarState) -> Optional[float]:
+        if not self.track or owner.loc is None or target.loc is None:
+            return None
+        gap = self._traffic_distance(owner, target)
+        return gap
+
+    def _hook_valid(self, owner: CarState, target: CarState, now: float) -> bool:
+        if target is owner or target.is_dead(now) or target.charging or not target.localized():
+            return False
+        gap = self._hook_gap(owner, target)
+        return gap is not None and 0 < gap <= HOOK_BREAK_MM
+
+    def nearest_ahead(self, owner: CarState, now: float, max_range: float = HOOK_RANGE_MM) -> Optional[CarState]:
+        best: Optional[tuple[float, CarState]] = None
+        for other in self.cars:
+            if other is owner or other.is_dead(now) or other.charging or not other.localized():
+                continue
+            gap = self._hook_gap(owner, other)
+            if gap is None or gap <= 0 or gap > max_range:
+                continue
+            if best is None or gap < best[0]:
+                best = (gap, other)
+        return best[1] if best else None
+
+    def update_hook(self, owner: CarState, held: bool, now: float, dt: float) -> None:
+        """Hold the hook to slow the nearest car ahead, in any lane."""
+        if owner.loadout.powerup != "hook":
+            return
+        if (not held or owner.is_dead(now) or owner.charging or not owner.localized()):
+            self.release_hook(owner)
+            return
+        target = owner.hook_target
+        if target is None and owner.powerup_energy < HOOK_MIN_ENERGY:
+            self.release_hook(owner)
+            return
+        if target is None or not self._hook_valid(owner, target, now):
+            if target is not None:
+                self.release_hook(owner)
+                if owner.powerup_energy < HOOK_MIN_ENERGY:
+                    return
+            target = self.nearest_ahead(owner, now)
+            if target is None:
+                return
+            owner.hook_target = target
+            self.log(f"{owner.name}: hook on {target.name}", owner.color)
+        owner.powerup_energy = max(0.0, owner.powerup_energy - HOOK_DRAIN * dt)
+        owner.powerup_last_use_t = now
+        target.hooked_until = now + 0.2
+        target.hooked_by = owner
+        target.lights_hooked(now)
+        owner.lights_hook_attacker(True)
+        p0, p1 = owner.world(), target.world()
+        if p0 is not None and p1 is not None:
+            self.tethers.append(Tether(p0[0], p0[1], p1[0], p1[1],
+                                       (255, 220, 90), now + 0.12))
+        if owner.powerup_energy <= 0:
+            self.release_hook(owner)
+
+    def release_hook(self, owner: CarState) -> None:
+        target = owner.hook_target
+        owner.hook_target = None
+        owner.lights_hook_attacker(False)
+        if target is not None and target.hooked_by is owner:
+            target.hooked_by = None
+            target.lights_unhook()
+
+    def start_anchor(self, c: CarState, now: float) -> None:
+        if (c.loadout.powerup != "anchor" or c.anchor_active or c.powerup_energy < ANCHOR_COST
+                or c.is_dead(now) or c.charging or not c.localized()):
+            return
+        c.powerup_energy = max(0.0, c.powerup_energy - ANCHOR_COST)
+        c.powerup_last_use_t = now
+        c.anchor_until = now + ANCHOR_HOLD_S
+        c.anchor_active = True
+        c.hard_stop(now)
+        self.log(f"{c.name}: anchor", c.color)
+
+    def update_anchor(self, c: CarState, now: float) -> None:
+        if c.anchor_active and now >= c.anchor_until:
+            c.anchor_active = False
+            c.powerup_last_use_t = now
+
+    def booster_target(self, c: CarState) -> float:
+        return min(BOOSTER_MAX_MM_S, c.max_speed * BOOSTER_FACTOR)
+
+    def cancel_powerups(self, c: CarState) -> None:
+        """Drop active effects when a car is destroyed or loses the track."""
+        self.release_hook(c)
+        if c.booster_active:
+            c.booster_active = False
+            c.lights_booster(False)
+        c.anchor_active = False
+        c.uturn_state = "idle"
+        c.uturn_retries = 0
+        c.manual_reverse = False
+
+    def update_booster(self, c: CarState, held: bool, now: float, dt: float) -> None:
+        if c.loadout.powerup != "booster":
+            return
+        if (not held or c.is_dead(now) or c.charging or c.uturn_state != "idle"
+                or c.anchor_active or not self._boost_clear(c, now)):
+            if c.booster_active:
+                c.booster_active = False
+                c.booster_ready_at = now + BOOSTER_COOLDOWN_S
+                c.lights_booster(False)
+            return
+        if not c.booster_active:
+            if now < c.booster_ready_at or c.powerup_energy < BOOSTER_MIN_ENERGY:
+                return
+            c.booster_active = True
+            c.lights_booster(True)
+        c.powerup_energy = max(0.0, c.powerup_energy - BOOSTER_DRAIN * dt)
+        c.powerup_last_use_t = now
+        if c.powerup_energy <= 0:
+            c.booster_active = False
+            c.booster_ready_at = now + BOOSTER_COOLDOWN_S
+            c.lights_booster(False)
 
     def drop_mine(self, owner: CarState, now: float) -> None:
         if not self.weapons_enabled or now < owner.mine_ready_at or owner.is_dead(now) or not owner.localized():
@@ -2111,7 +2725,25 @@ class Game:
             if m in self.mines:
                 self.mines.remove(m)
 
-    def damage(self, victim: CarState, attacker: CarState, amount: int, now: float, mine: bool = False) -> None:
+    def _check_battle_end(self, now: float) -> None:
+        """The last car with lives remaining wins the battle."""
+        if self.mode != "battle" or self.finished or self._battle_contenders < 2:
+            return
+        active = [c for c in self.cars
+                  if c.participates() and not c.eliminated and c.lives > 0
+                  and c.car.connected and not c.charging]
+        if len(active) != 1:
+            return
+        winner = active[0]
+        self.winner = winner
+        self.finish_t = now
+        self.finish_celebration_t = 0.0
+        self._finish_lights_winner = None
+        self.effect("boom", winner.world(), winner.color, 1.5)
+        self.log(f"{winner.name} WINS the battle!", winner.color)
+
+    def damage(self, victim: CarState, attacker: CarState, amount: int, now: float,
+               mine: bool = False, spray: bool = False) -> None:
         if victim.is_dead(now) or victim.hp <= 0:
             return
         victim.hp = max(0, victim.hp - amount)
@@ -2120,14 +2752,28 @@ class Game:
         self.effect("text", w, (255, 235, 200), 0.9, f"-{amount}")
         fatal = victim.hp <= 0
         if victim.source:
-            victim.source.rumble(*(DEATH_RUMBLE if fatal else HIT_RUMBLE))
+            hit = DEATH_RUMBLE if fatal else (SPRAY_HIT_RUMBLE if spray else HIT_RUMBLE)
+            victim.source.rumble(*hit)
         if fatal:
-            victim.dead_until = now + DEATH_STOP_S
             victim.deaths += 1
             attacker.kills += 1
+            if self.mode == "battle":
+                victim.lives = max(0, victim.lives - 1)
+                if victim.lives <= 0:
+                    victim.eliminated = True
+                    victim.dead_until = float("inf")
+                    self.log(f"{attacker.name} eliminated {victim.name}!", attacker.color)
+                else:
+                    victim.dead_until = now + DEATH_STOP_S
+                    self.log(f"{attacker.name} destroyed {victim.name}! "
+                             f"{victim.lives} lives left", attacker.color)
+            else:
+                victim.dead_until = now + DEATH_STOP_S
+                self.log(f"{attacker.name} destroyed {victim.name}!", attacker.color)
+            self.cancel_powerups(victim)
             victim.lights_dead()
             self.effect("boom", w, victim.color, 1.2)
-            self.log(f"{attacker.name} destroyed {victim.name}!", attacker.color)
+            self._check_battle_end(now)
         else:
             victim.lights_hit(now, mine=mine)
             victim.update_health_light(self.weapons_enabled)

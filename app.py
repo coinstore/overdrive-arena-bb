@@ -1,19 +1,20 @@
 """Anki Overdrive arena: drive the cars with Xbox / PS5 pads or the keyboard, see them live on a
 scanned track map, and shoot each other with virtual weapons.
 
-Flow:  connect to every car  ->  PAIRING screen (claim a car per controller, scan the track)
-       ->  RACE (Back/Esc returns to pairing)
+Flow:  connect to every car  ->  LOBBY (CARS / GARAGE tabs, scan the track)
+       ->  RACE (Back/Esc returns to the lobby)
 
 Gamepad (Xbox names; PS5: Cross=A, Circle=B, Square=X, Triangle=Y, Share=Back, Options=Start):
   RT / LT             accelerate / decelerate   Left stick X   change lane (4 lanes)
                       (releasing holds speed)  D-pad up/down  speed limit +/- 100
   LB / RB, D-pad L/R  snap one lane
-  X                   fire blaster              Y              drop mine (pairing: scan track)
-  A                   U-turn (pairing: claim)   B              emergency stop
-  Start               start race                Back           back / quit
+  X                   hold fire / tap           A              powerup (hold/tap)
+  B                   emergency stop            Y              unused in a race
+  Start               next / start              Back           back / quit
+  Back / View         garage -> cars            LT + L-stick   settings (lobby)
 
-Keyboard:  W/S accelerate/decelerate (holds)  A/D steer  Q/E lane  F fire  G mine  U u-turn  Space stop
-           +/- limit   Enter claim/start   T scan track   Esc back/quit
+Keyboard:  W/S accelerate/decelerate (holds)  A/D steer  Q/E lane  F weapon  U powerup  Space stop
+           +/- limit   Enter claim/equip   Tab AI/park   T scan track   Esc back/quit
 """
 from __future__ import annotations
 
@@ -34,9 +35,8 @@ from anki.ble_worker import BleWorker
 from anki.track import Track, TrackScanner, ScanEvidence
 from anki.vehicle import Vehicle, discover
 from game import inputs as I
-from game.game import CarState, Game, PLAYER_COLORS
+from game.game import CarState, Game, Loadout, PLAYER_COLORS, POWERUPS, WEAPONS
 from game.render import Renderer
-from game.records import Records
 
 log = logging.getLogger("app")
 
@@ -49,12 +49,15 @@ SCAN_TIMEOUT_S = 90
 SCAN_NO_DATA_S = 8.0
 
 PAIRING, SCANNING, GRID, READY, COUNTDOWN, RACE = "pairing", "scanning", "grid", "ready", "countdown", "race"
-SCORES = "scores"
 
-CONTROLS_PAIRING = ("pad:  Left/Right car   A claim   B release   X AI   Y scan   L-stick mode   Up/Down laps   Start/Options RACE   Back quit\n"
-                    "keys: Left/Right move   Enter take car   Backspace release   Tab AI level/park   T scan track   M mode   Space RACE   Esc quit")
-CONTROLS_RACE = ("pad: R2 gas  L2 brake (speed holds)  stick/LB/RB lanes  X fire  Y mine  A u-turn  B stop  D-pad limit  L-stick boost  Back pairing\n"
-                 "key: W/S gas/brake (holds)  A/D steer  Q/E lanes  F fire  G mine  U u-turn  Space stop  +/- limit  LShift boost  Esc pairing  F11 fullscreen")
+CONTROLS_CARS = "A/Enter choose · B release · X/Tab AI · Y/T scan"
+CONTROLS_GARAGE = "A/Enter equip · Up/Down slot · Left/Right item"
+CONTROLS_RACE = ("pad: R2 gas · L2 brake · stick lanes\n"
+                 "X hold fire · A powerup · B stop\n"
+                 "key: W/S · A/D · Q/E · F/U · Space · Esc")
+CONTROLS_RACE_NO_WEAPON = ("pad: R2 gas · L2 brake · stick lanes\n"
+                           "A powerup · B stop · Back: lobby\n"
+                           "key: W/S · A/D · Q/E · U · Space · Esc")
 
 
 class App:
@@ -73,21 +76,35 @@ class App:
         self.cars: list[CarState] = []
         self.game: Optional[Game] = None
         self.state = PAIRING
+        self.setup_tab = "cars"
         self.cursors: dict[I.InputSource, int] = {}
+        self.garage_cursors: dict[I.InputSource, tuple[int, int]] = {}
+        self.loadouts: dict[I.InputSource, Loadout] = {}
         self.claims: dict[I.InputSource, CarState] = {}
         self.status = ""
+        self.settings_open = False
         self.scanners: dict[CarState, TrackScanner] = {}
         self.scan_started = 0.0
         self.identified: dict[int, bool] = {}
         self.click: Optional[tuple[int, int]] = None
         self.lap_choices = (3, 5, 10, 20)
-        self.live_scores = None
-        self.scores_published_at = 0.0
+        for source in self.sources:
+            self.garage_cursors[source] = (0, 0)
+            self.loadouts[source] = Loadout()
 
     # ------------------------------------------------------------ setup
     @property
     def sources(self) -> list[I.InputSource]:
         return [*self.pads, self.keyboard]
+
+    @property
+    def status(self) -> str:
+        return self._status
+
+    @status.setter
+    def status(self, text: str) -> None:
+        self._status = text
+        self._status_t = time.monotonic()
 
     def connect_cars(self) -> bool:
         a = self.args
@@ -138,7 +155,6 @@ class App:
         if track:
             log.info("loaded %s: %s", TRACK_FILE.name, track.describe())
         self.game = Game(self.ble, self.cars, track, ai_enabled=not self.args.no_ai, ai_speed=self.args.ai_speed)
-        self.game.records = Records(Path(__file__).parent / "records.json")
         self.game.mode = self.args.mode
         self.game.lap_target = self.args.laps
         self.game.set_race_speed_limit(self.args.max_speed if self.args.max_speed is not None else 2000)
@@ -149,7 +165,7 @@ class App:
             self.cursors[s] = 0
         return True
 
-    # ------------------------------------------------------------ pairing
+    # ------------------------------------------------------------ lobby
     def assign_player_colors(self, send_lights: bool = True) -> None:
         """One colour per player: a claimed car takes its driver's colour.
 
@@ -177,38 +193,194 @@ class App:
             if car.set_player_color(index) and send_lights:
                 car.set_roof_color()
 
+    def loadout_for(self, source: I.InputSource) -> Loadout:
+        return self.loadouts.setdefault(source, Loadout())
+
+    def garage_rows(self) -> list[tuple[str, tuple[str, ...]]]:
+        """Rows shown in the garage: weapons first in battle, then powerups."""
+        g = self.game
+        assert g is not None
+        rows: list[tuple[str, tuple[str, ...]]] = []
+        if g.mode == "battle":
+            rows.append(("weapon", WEAPONS))
+        rows.append(("powerup", POWERUPS))
+        return rows
+
+    def garage_cursor(self, source: I.InputSource) -> tuple[int, int]:
+        rows = self.garage_rows()
+        row, col = self.garage_cursors.get(source, (0, 0))
+        row %= max(1, len(rows))
+        col %= max(1, len(rows[row][1]))
+        self.garage_cursors[source] = (row, col)
+        return row, col
+
+    def move_garage_cursor(self, source: I.InputSource, dx: int, dy: int) -> None:
+        rows = self.garage_rows()
+        row, col = self.garage_cursor(source)
+        row = (row + dy) % len(rows)
+        col = (col + dx) % len(rows[row][1])
+        self.garage_cursors[source] = (row, col)
+
+    def equip_garage(self, source: I.InputSource) -> None:
+        g = self.game
+        assert g is not None
+        rows = self.garage_rows()
+        row, col = self.garage_cursor(source)
+        kind, items = rows[row]
+        item = items[col]
+        loadout = self.loadout_for(source)
+        if kind == "weapon":
+            loadout.weapon = item
+        else:
+            loadout.powerup = item
+        source.rumble(0.25, 0.35, 80)
+
+    def open_settings(self) -> None:
+        self.settings_open = True
+
+    def close_settings(self) -> None:
+        self.settings_open = False
+        self.status = ""
+
+    def cycle_speed(self, step: int) -> None:
+        g = self.game
+        assert g is not None
+        value = g.race_speed_limit + step
+        if value > 2000:
+            value = 200
+        elif value < 200:
+            value = 2000
+        g.set_race_speed_limit(value)
+
+    def toggle_fair(self) -> None:
+        g = self.game
+        assert g is not None
+        g.fair_game = not g.fair_game
+
+    def next_step(self) -> None:
+        g = self.game
+        assert g is not None
+        if not g.can_start(self.claims.values()):
+            self.status = "assign a player or AI to a connected car off its charger"
+            return
+        self.setup_tab = "garage"
+        self.status = ""
+
+    def back_step(self) -> None:
+        self.setup_tab = "cars"
+        self.status = ""
+
+    def handle_setup_click(self, pos: tuple[int, int]) -> Optional[bool]:
+        g = self.game
+        assert g is not None
+        btns = self.renderer.buttons
+        if self.settings_open:
+            if "settings_close" in btns and btns["settings_close"].collidepoint(pos):
+                self.close_settings()
+            elif "max_down" in btns and btns["max_down"].collidepoint(pos):
+                self.cycle_speed(-200)
+            elif "max_up" in btns and btns["max_up"].collidepoint(pos):
+                self.cycle_speed(200)
+            elif "fair_toggle" in btns and btns["fair_toggle"].collidepoint(pos):
+                self.toggle_fair()
+            return None
+        if "settings" in btns and btns["settings"].collidepoint(pos):
+            self.open_settings()
+        elif "scan" in btns and btns["scan"].collidepoint(pos):
+            self.start_scan_all()
+            return True
+        elif self.setup_tab == "cars" and "next" in btns and btns["next"].collidepoint(pos):
+            self.next_step()
+            return True
+        elif self.setup_tab == "cars" and "quit" in btns and btns["quit"].collidepoint(pos):
+            return False
+        elif self.setup_tab == "garage" and "back" in btns and btns["back"].collidepoint(pos):
+            self.back_step()
+            return True
+        elif self.setup_tab == "garage" and "race" in btns and btns["race"].collidepoint(pos):
+            if g.can_start(self.claims.values()):
+                self.start_race()
+                return True
+            self.status = "assign a player or AI to a connected car off its charger"
+        elif "mode" in btns and btns["mode"].collidepoint(pos):
+            self.toggle_mode()
+        elif "laps" in btns and btns["laps"].collidepoint(pos):
+            i = self.lap_choices.index(g.lap_target) if g.lap_target in self.lap_choices else -1
+            g.lap_target = self.lap_choices[(i + 1) % len(self.lap_choices)]
+        return None
+
     def pairing_tick(self) -> bool:
         g = self.game
         assert g is not None
         n = len(self.cars)
+        sources = [s for s in self.sources if s.alive()]
+
         if self.click is not None:
             pos, self.click = self.click, None
-            btns = self.renderer.buttons
-            if "scan" in btns and btns["scan"].collidepoint(pos):
-                self.start_scan_all()
-                return True
-            elif "scores" in btns and btns["scores"].collidepoint(pos):
-                self.open_scores()
-                return True
-            elif "race" in btns and btns["race"].collidepoint(pos):
-                if g.can_start(self.claims.values()):
-                    self.start_race()
-                    return True
-                self.status = "assign a player or AI to a connected car off its charger"
-            elif "mode" in btns and btns["mode"].collidepoint(pos):
-                self.toggle_mode()
-            elif "laps" in btns and btns["laps"].collidepoint(pos):
-                i = self.lap_choices.index(g.lap_target) if g.lap_target in self.lap_choices else -1
-                g.lap_target = self.lap_choices[(i + 1) % len(self.lap_choices)]
-            elif "speed" in btns and btns["speed"].collidepoint(pos):
-                g.set_race_speed_limit(g.race_speed_limit + 200 if g.race_speed_limit < 2000 else 200)
-            elif "fair" in btns and btns["fair"].collidepoint(pos):
-                g.fair_game = not g.fair_game
-        for s in self.sources:
-            if not s.alive():
-                continue
-            if s.pressed(I.BACK):
+            result = self.handle_setup_click(pos)
+            if result is False:
                 return False
+            if result is True:
+                return True
+
+        if self.settings_open:
+            for s in sources:
+                if s.pressed(I.BACK) or s.pressed(I.SETTINGS) or s.pressed(I.READY):
+                    self.close_settings()
+                    return True
+                if s.pressed(I.SECONDARY):
+                    self.toggle_fair() if s.brake() > .5 else self.cycle_speed(200)
+                if s.pressed(I.FAIR_GAME):
+                    self.toggle_fair()
+            return True
+
+        if any(s.pressed(I.BACK) for s in sources):
+            if self.setup_tab == "garage":
+                self.back_step()
+                return True
+            return False
+        if any(s.pressed(I.SETTINGS) for s in sources):
+            self.open_settings()
+            return True
+        if any(s.pressed(I.SCAN) for s in sources):
+            self.start_scan_all()
+            return True
+        if any(s.pressed(I.READY) for s in sources):
+            if self.setup_tab == "cars":
+                self.next_step()
+            elif not g.can_start(self.claims.values()):
+                self.status = "assign a player or AI to a connected car off its charger"
+            else:
+                self.start_race()
+            return True
+
+        for s in sources:
+            if s.pressed(I.TOGGLE_MODE):
+                if s.brake() > .5:
+                    self.open_settings()
+                    return True
+                self.toggle_mode()
+            if s.pressed(I.SECONDARY):
+                self.toggle_fair() if s.brake() > .5 else self.cycle_speed(200)
+            if s.pressed(I.FAIR_GAME):
+                self.toggle_fair()
+
+        if self.setup_tab == "garage":
+            for s in sources:
+                if s.pressed(I.MENU_LEFT):
+                    self.move_garage_cursor(s, -1, 0)
+                if s.pressed(I.MENU_RIGHT):
+                    self.move_garage_cursor(s, 1, 0)
+                if s.pressed(I.MENU_UP):
+                    self.move_garage_cursor(s, 0, -1)
+                if s.pressed(I.MENU_DOWN):
+                    self.move_garage_cursor(s, 0, 1)
+                if s.pressed(I.SELECT):
+                    self.equip_garage(s)
+            self.update_identify_lights()
+            return True
+
+        for s in sources:
             if s.pressed(I.MENU_LEFT):
                 self.cursors[s] = (self.cursors.get(s, 0) - 1) % n
             if s.pressed(I.MENU_RIGHT):
@@ -219,19 +391,16 @@ class App:
                 if owner is s:
                     del self.claims[s]
                     self.assign_player_colors()
-                    self.status = f"{s.short} released {car.name}"
                 elif owner is not None:
                     self.status = f"{car.name} is already driven by {owner.short}"
                 else:
                     self.claims.pop(s, None)          # one car per controller
                     self.claims[s] = car
                     self.assign_player_colors()
-                    self.status = f"{s.short} ({s.name}) drives {car.name}"
                     s.rumble(0.5, 0.5, 200)
             if s.pressed(I.RELEASE) and s in self.claims:
-                released = self.claims.pop(s)
+                self.claims.pop(s)
                 self.assign_player_colors()
-                self.status = f"{s.short} released {released.name}"
             if s.pressed(I.TOGGLE_AI):
                 if car in self.claims.values():
                     self.status = f"{car.name} has a player; release it first"
@@ -239,35 +408,10 @@ class App:
                     self.status = "AI disabled by --no-ai; restart without that option to enable it"
                 else:
                     car.cycle_ai()
-                    self.status = f"{car.name}: AI {car.ai_difficulty.title()}" if car.ai_pref else f"{car.name}: parked"
-            if s.pressed(I.SCAN):
-                self.start_scan_all()
-                return True
-            if s.pressed(I.TOGGLE_MODE):
-                if s.brake() > .5:
-                    self.open_scores()
-                    return True
-                self.toggle_mode()
-            if s.pressed(I.SCORES):
-                self.open_scores()
-                return True
-            if s.pressed(I.SECONDARY):
-                if s.brake() > .5:
-                    g.fair_game = not g.fair_game
-                else:
-                    g.set_race_speed_limit(g.race_speed_limit + 200 if g.race_speed_limit < 2000 else 200)
-            if s.pressed(I.FAIR_GAME):
-                g.fair_game = not g.fair_game
             if s.pressed(I.LIMIT_UP) or s.pressed(I.LIMIT_DOWN):
                 step = 1 if s.pressed(I.LIMIT_UP) else -1
                 index = self.lap_choices.index(g.lap_target) if g.lap_target in self.lap_choices else 0
                 g.lap_target = self.lap_choices[(index + step) % len(self.lap_choices)]
-            if s.pressed(I.READY):
-                if not g.can_start(self.claims.values()):
-                    self.status = "assign a player or AI to a connected car off its charger"
-                else:
-                    self.start_race()
-                    return True
         self.update_identify_lights()
         return True
 
@@ -275,13 +419,17 @@ class App:
         g = self.game
         assert g is not None
         g.mode = "race" if g.mode == "battle" else "battle"
-        self.status = ("RACE mode: laps only, weapons off" if g.mode == "race" else "BATTLE mode: blasters, mines and kills")
+        for s in self.sources:
+            self.garage_cursor(s)
+        self.status = ""
 
     def update_identify_lights(self) -> None:
-        """Claimed cars keep their headlights on; a car under someone's cursor blinks so you can spot it."""
+        """Claimed cars keep their headlights on; in the car tab a hovered car blinks."""
         blink = int(time.monotonic() * 1.5) % 2 == 0
         for c in self.cars:
-            hovered = any(idx == c.index for s, idx in self.cursors.items() if s.alive() and self.claims.get(s) is not c)
+            hovered = (self.setup_tab == "cars"
+                       and any(idx == c.index for s, idx in self.cursors.items()
+                               if s.alive() and self.claims.get(s) is not c))
             claimed = c in self.claims.values()
             want = claimed or (hovered and blink)
             if self.identified.get(c.index) != want:
@@ -295,59 +443,19 @@ class App:
             c.source = None
         for s, c in self.claims.items():
             c.source = s
+            c.loadout = self.loadout_for(s)
         self.assign_player_colors(send_lights=False)
         self.identified.clear()
+        self.settings_open = False
+        self.click = None
         g.begin_grid()
         self.state = GRID
         self.status = ""
 
-    def open_scores(self) -> None:
-        import webbrowser
-        from game.score_page import LiveScores
-        try:
-            self.game.records.remember_track(self.game.track)
-            if getattr(self, 'live_scores', None) is None:
-                self.live_scores = LiveScores(self.game.records, self.game.track)
-            else:
-                self.live_scores.publish(self.game.records, self.game.track)
-            webbrowser.open(self.live_scores.url, new=2, autoraise=False)
-            self.status = "Live scores open: leave the browser on your second screen"
-        except OSError as exc:
-            self.status = f"Could not open high scores: {exc}"
-
-    def scores_tick(self) -> None:
-        action = None
-        if self.click is not None:
-            pos, self.click = self.click, None
-            action = next((key for key, rect in self.renderer.buttons.items() if rect.collidepoint(pos)), None)
-        for source in self.sources:
-            if not source.alive():
-                continue
-            if source.pressed(I.BACK):
-                action = "back"
-            elif source.pressed(I.MENU_LEFT):
-                action = "previous"
-            elif source.pressed(I.MENU_RIGHT):
-                action = "next"
-            elif source.pressed(I.LIMIT_UP):
-                action = "page_previous"
-            elif source.pressed(I.LIMIT_DOWN):
-                action = "page_next"
-        if action == "back":
-            self.state = PAIRING
-            return
-        boards = self.game.records.archive()
-        if action in ("previous", "next"):
-            self.score_board = (self.score_board + (1 if action == "next" else -1)) % max(1, len(boards))
-            self.score_page = 0
-        if action in ("page_previous", "page_next") and boards:
-            capacity = self.renderer.scores_capacity()
-            pages = max(1, (len(boards[self.score_board][1]) + capacity - 1) // capacity)
-            self.score_page = (self.score_page + (1 if action == "page_next" else -1)) % pages
-
     def grid_tick(self, dt: float) -> None:
         g = self.game
         assert g is not None
+        self.click = None
         if any(s.pressed(I.BACK) for s in self.sources):
             g.stop_all()
             self.identified.clear()
@@ -365,11 +473,12 @@ class App:
             # Hold the field on the line until the start button is pressed
             # again; only then begin the 3-2-1 countdown.
             self.state = READY
-            self.status = "press Start to race"
+            self.status = ""
 
     def ready_tick(self, dt: float) -> None:
         g = self.game
         assert g is not None
+        self.click = None
         if any(s.pressed(I.BACK) for s in self.sources):
             g.stop_all()
             self.identified.clear()
@@ -385,6 +494,7 @@ class App:
     def countdown_tick(self, dt: float) -> None:
         g = self.game
         assert g is not None
+        self.click = None
         if any(s.pressed(I.BACK) for s in self.sources):
             g.stop_all()
             self.identified.clear()
@@ -403,6 +513,7 @@ class App:
         g = self.game
         assert g is not None
         g.stop_all()
+        self.click = None
         self.scanners = {}
         evidence = ScanEvidence()
         for c in self.cars:
@@ -432,6 +543,7 @@ class App:
             c.extra_listener = None
             c.hard_stop(time.monotonic())
         self.state = PAIRING
+        self.click = None
         self.identified.clear()
 
     def scanning_tick(self) -> None:
@@ -471,7 +583,6 @@ class App:
                 c, sc = winner
                 sc.track.save(TRACK_FILE)  # type: ignore[union-attr]
                 g.set_track(sc.track)
-                g.records.remember_track(sc.track)
                 contributors = ", ".join(sorted(sc.evidence.contributors)) or c.name
                 self.status = f"combined scan ({contributors}): {len(sc.track)} pieces"  # type: ignore[arg-type]
                 if off:
@@ -495,7 +606,7 @@ class App:
                 self.assign_player_colors()
                 self.identified.clear()
                 self.state = PAIRING
-                self.status = "back to pairing (cars stopped)"
+                self.status = ""
                 return
             if g.finished and s.pressed(I.READY):
                 g.stop_all()
@@ -503,12 +614,11 @@ class App:
                 return
         g.tick(dt)
         if g.finished and g.finish_celebration_t and time.monotonic() - g.finish_celebration_t > 14.0:
-            winner = g.winner
             g.stop_all()
             self.assign_player_colors()
             self.identified.clear()
             self.state = PAIRING
-            self.status = f"{winner.name} won the race ({winner.driver_label()})" if winner else "race over"
+            self.status = ""
 
     # ------------------------------------------------------------ main loop
     def handle_events(self) -> bool:
@@ -533,7 +643,8 @@ class App:
                         if all(p.instance_id != pad.instance_id for p in self.pads):
                             self.pads.append(pad)
                             self.cursors[pad] = 0
-                            self.status = f"controller connected: {pad.name}"
+                            self.garage_cursors[pad] = (0, 0)
+                            self.loadouts[pad] = Loadout()
                         else:
                             pad.close()
                 except Exception as e:  # noqa: BLE001
@@ -542,6 +653,9 @@ class App:
                 for p in self.pads:
                     if p.instance_id == ev.instance_id:
                         p.mark_removed()
+                        self.cursors.pop(p, None)
+                        self.loadouts.pop(p, None)
+                        self.garage_cursors.pop(p, None)
                         car = self.claims.pop(p, None)
                         if car is not None:
                             car.source = None
@@ -575,14 +689,13 @@ class App:
                 for car in self.cars:
                     car.drain_messages()
                 for s in self.sources:
-                    s.poll(dt)
+                    if s.alive():
+                        s.poll(dt)
                 if self.state == PAIRING:
                     running = running and self.pairing_tick()
                 elif self.state == SCANNING:
                     self.scanning_tick()
                     self.game.tick(dt)  # keeps localizers advancing, no driving (not running)
-                elif self.state == SCORES:
-                    self.scores_tick()
                 elif self.state == GRID:
                     self.grid_tick(dt)
                 elif self.state == READY:
@@ -592,10 +705,9 @@ class App:
                 elif self.state == RACE:
                     self.race_tick(dt)
                 self.keyboard.end_frame()
-                if self.live_scores and t0 - self.scores_published_at >= 1.0:
-                    self.live_scores.publish(self.game.records, self.game.track)
-                    self.scores_published_at = t0
                 self.maybe_reconnect(t0)
+                if self._status and t0 - self._status_t > 6.0:
+                    self._status = ""    # warnings fade; the lobby stays quiet
                 if t0 - last_batt > 4:
                     for c in self.cars:
                         self.ble.fire(c.car.send(P.battery_request()))
@@ -652,32 +764,34 @@ class App:
     def draw(self) -> None:
         g = self.game
         assert g is not None
+        controls = CONTROLS_RACE if g.mode == "battle" else CONTROLS_RACE_NO_WEAPON
         if self.state == PAIRING:
-            self.renderer.draw_pairing(g, self.sources, self.cursors, self.claims, self.status, CONTROLS_PAIRING)
+            self.renderer.draw_lobby(g, self.sources, self.cursors, self.claims, self.loadouts,
+                                     self.garage_cursors, self.setup_tab, self.settings_open,
+                                     self.status, CONTROLS_CARS, CONTROLS_GARAGE)
         elif self.state == SCANNING:
             self.renderer.draw_scan(g, self.scanners, time.monotonic() - self.scan_started)
-        elif self.state == SCORES:
-            self.renderer.draw_scores(g, self.score_board, self.score_page)
         elif self.state == GRID:
             placed, total = g.grid_summary()
-            self.renderer.draw_race(g, CONTROLS_RACE, overlay=f"TO THE START LINE  {placed}/{total}",
+            self.renderer.draw_race(g, controls, overlay=f"TO THE START LINE  {placed}/{total}",
                                     sub="cars drive themselves to the grid  -  Back / Esc cancels")
         elif self.state == READY:
-            self.renderer.draw_race(g, CONTROLS_RACE, overlay="PRESS START",
+            self.renderer.draw_race(g, controls, overlay="PRESS START",
                                     sub="Start / Options / Space  -  Back / Esc cancels")
         elif self.state == COUNTDOWN:
             left = g.countdown_left()
-            self.renderer.draw_race(g, CONTROLS_RACE, overlay=f"{int(left) + 1}" if left > 0 else "GO!", sub="get ready")
+            self.renderer.draw_race(g, controls, overlay=f"{int(left) + 1}" if left > 0 else "GO!", sub="get ready")
         elif g.finished and g.winner is not None:
-            self.renderer.draw_race(g, CONTROLS_RACE, overlay=f"{g.winner.name} WINS", sub=f"{g.lap_target} laps  -  Start / Options: race again  -  Back: menu")
+            if g.mode == "battle":
+                sub = (f"{g.winner.kills} kills  -  Start / Options: battle again  -  Back: menu")
+            else:
+                sub = f"{g.lap_target} laps  -  Start / Options: race again  -  Back: menu"
+            self.renderer.draw_race(g, controls, overlay=f"{g.winner.name} WINS", sub=sub)
         else:
-            self.renderer.draw_race(g, CONTROLS_RACE)
+            self.renderer.draw_race(g, controls)
         pygame.display.flip()
 
     def shutdown(self) -> None:
-        if getattr(self, 'live_scores', None):
-            self.live_scores.close()
-            self.live_scores = None
         log.info("stopping cars...")
 
         async def stop_all():

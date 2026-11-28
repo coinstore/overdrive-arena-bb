@@ -1,4 +1,4 @@
-"""Straight-line blaster targeting on straights and curves."""
+"""Sniper line targeting and the short-range blaster cone."""
 import math
 import time
 import unittest
@@ -6,7 +6,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from anki.track import Piece, Track, START, STRAIGHT, TURN
-from game.game import (BLASTER_DAMAGE, BLASTER_TRACK_CORRIDOR_MM, CarState, Game, MAX_HP)
+from game.game import (BATTLE_LIVES, BLASTER_DAMAGE, SNIPER_DAMAGE,
+                       SNIPER_TRACK_CORRIDOR_MM, BLASTER_RANGE_MM,
+                       BLASTER_FIRE_RUMBLE, BLASTER_OVERHEAT_RUMBLE, SPRAY_HIT_RUMBLE,
+                       CarState, DEATH_STOP_S, Game, MAX_HP)
 
 
 def make_car(index=0):
@@ -69,7 +72,7 @@ class WeaponAimTests(unittest.TestCase):
 
         game.fire(shooter, now)
 
-        self.assertEqual(target.hp, MAX_HP - BLASTER_DAMAGE)
+        self.assertEqual(target.hp, MAX_HP - SNIPER_DAMAGE)
         self.assertTrue(game.lasers[-1].hit)
 
     def test_adjacent_lane_is_not_hit(self):
@@ -115,27 +118,27 @@ class WeaponAimTests(unittest.TestCase):
         self.assertIsNotNone(found)
         self.assertIs(found[0], target)
         game.fire(shooter, now)
-        self.assertEqual(target.hp, MAX_HP - BLASTER_DAMAGE)
+        self.assertEqual(target.hp, MAX_HP - SNIPER_DAMAGE)
 
     def test_beam_ends_at_the_track_edge(self):
         track = corner_track()
         x, y = track.world_point(1, 0.1)
         angle = track.heading_at(1, 0.1)
 
-        length, x1, y1 = track.beam_end(x, y, angle, BLASTER_TRACK_CORRIDOR_MM)
+        length, x1, y1 = track.beam_end(x, y, angle, SNIPER_TRACK_CORRIDOR_MM)
 
         self.assertGreater(length, 0)
         self.assertLess(length, 1000)
-        self.assertLessEqual(nearest_centerline_mm(track, x1, y1), BLASTER_TRACK_CORRIDOR_MM)
+        self.assertLessEqual(nearest_centerline_mm(track, x1, y1), SNIPER_TRACK_CORRIDOR_MM)
         beyond = (x1 + math.cos(angle) * 20, y1 + math.sin(angle) * 20)
-        self.assertGreater(nearest_centerline_mm(track, *beyond), BLASTER_TRACK_CORRIDOR_MM)
+        self.assertGreater(nearest_centerline_mm(track, *beyond), SNIPER_TRACK_CORRIDOR_MM)
 
     def test_long_straight_beam_is_not_capped_at_the_old_range(self):
         track = straight_track()
         x, y = track.world_point(0, 0.1)
         angle = track.heading_at(0, 0.1)
 
-        length, _x1, _y1 = track.beam_end(x, y, angle, BLASTER_TRACK_CORRIDOR_MM)
+        length, _x1, _y1 = track.beam_end(x, y, angle, SNIPER_TRACK_CORRIDOR_MM)
 
         self.assertGreater(length, 1400.0)
 
@@ -145,7 +148,7 @@ class WeaponAimTests(unittest.TestCase):
         now = time.monotonic()
         p0 = shooter.world()
         angle = shooter.loc.heading()
-        expected, _ex, _ey = game.track.beam_end(p0[0], p0[1], angle, BLASTER_TRACK_CORRIDOR_MM)
+        expected, _ex, _ey = game.track.beam_end(p0[0], p0[1], angle, SNIPER_TRACK_CORRIDOR_MM)
 
         game.fire(shooter, now)
 
@@ -153,6 +156,153 @@ class WeaponAimTests(unittest.TestCase):
         self.assertFalse(laser.hit)
         self.assertAlmostEqual(math.dist((laser.x0, laser.y0), (laser.x1, laser.y1)), expected, places=3)
         self.assertLess(expected, 1000)
+
+
+class BlasterTests(unittest.TestCase):
+    def game(self, track, count=2):
+        cars = [make_car(i) for i in range(count)]
+        return Game(Mock(), cars, track, True, 800), cars
+
+    def test_blaster_hits_every_car_in_its_short_cone(self):
+        game, (shooter, left, right) = self.game(straight_track(), count=3)
+        place(shooter, 0, 0.1, lane=0)
+        place(left, 0, 0.5, lane=-23)
+        place(right, 0, 0.5, lane=23)
+        shooter.loadout.weapon = "blaster"
+
+        game.fire(shooter, time.monotonic())
+
+        self.assertEqual(left.hp, MAX_HP - BLASTER_DAMAGE)
+        self.assertEqual(right.hp, MAX_HP - BLASTER_DAMAGE)
+        self.assertEqual(len(game.lasers), 2)
+
+    def test_blaster_range_is_500_mm(self):
+        game, (shooter, target) = self.game(straight_track())
+        place(shooter, 0, 0.1, lane=0)
+        place(target, 1, 0.1, lane=0)
+        shooter.loadout.weapon = "blaster"
+
+        self.assertGreater(math.dist(shooter.world(), target.world()), BLASTER_RANGE_MM)
+        game.fire(shooter, time.monotonic())
+
+        self.assertEqual(target.hp, MAX_HP)
+
+    def test_blaster_does_not_hit_two_lanes_away(self):
+        game, (shooter, target) = self.game(straight_track())
+        place(shooter, 0, 0.1, lane=-68)
+        place(target, 0, 0.5, lane=68)
+        shooter.loadout.weapon = "blaster"
+
+        game.fire(shooter, time.monotonic())
+
+        self.assertEqual(target.hp, MAX_HP)
+
+    def test_blaster_energy_drains_and_overheats(self):
+        game, (shooter, target) = self.game(straight_track())
+        place(shooter, 0, 0.1, lane=0)
+        place(target, 0, 0.5, lane=0)
+        shooter.loadout.weapon = "blaster"
+        now = time.monotonic()
+
+        game.update_blaster(shooter, True, now, 1.0)
+        self.assertEqual(shooter.weapon_energy, 75.0)
+        game.update_blaster(shooter, True, now + 3.1, 3.1)
+        self.assertGreater(shooter.blaster_overheated_until, now + 3.1)
+        self.assertFalse(game._blaster_ready(shooter, now + 3.1))
+
+    def test_blaster_uses_light_spray_rumble_and_overheat_buzz(self):
+        game, (shooter, target) = self.game(straight_track())
+        place(shooter, 0, 0.1, lane=0)
+        place(target, 0, 0.5, lane=0)
+        shooter.loadout.weapon = "blaster"
+        shooter.source = SimpleNamespace(rumble=Mock())
+        target.source = SimpleNamespace(rumble=Mock())
+        now = time.monotonic()
+
+        game.update_blaster(shooter, True, now, 0.2)
+        shooter.source.rumble.assert_any_call(*BLASTER_FIRE_RUMBLE)
+        target.source.rumble.assert_called_with(*SPRAY_HIT_RUMBLE)
+
+        shooter.source.rumble.reset_mock()
+        game.update_blaster(shooter, True, now + 4.0, 4.0)
+        shooter.source.rumble.assert_called_with(*BLASTER_OVERHEAT_RUMBLE)
+
+
+class LoadoutTests(unittest.TestCase):
+    def game(self, track, count=2):
+        cars = [make_car(i) for i in range(count)]
+        game = Game(Mock(), cars, track, True, 800)
+        game.mode = "battle"
+        game.running = True
+        game._battle_contenders = count
+        for i, car in enumerate(cars):
+            car.source = SimpleNamespace(short=f"P{i + 1}", rumble=Mock())
+        return game, cars
+
+    def test_weapon_choice_uses_mine_instead_of_blaster(self):
+        game, (shooter, target) = self.game(straight_track())
+        place(shooter, 0, 0.1, lane=23)
+        place(target, 0, 0.5, lane=23)
+        shooter.loadout.weapon = "mine"
+        now = time.monotonic()
+
+        game.use_weapon(shooter, now)
+
+        self.assertEqual(len(game.mines), 1)
+        self.assertEqual(target.hp, MAX_HP)
+        self.assertEqual(game.lasers, [])
+
+    def test_weapon_choice_uses_blaster_when_equipped(self):
+        game, (shooter, target) = self.game(straight_track())
+        place(shooter, 0, 0.1, lane=23)
+        place(target, 0, 0.5, lane=23)
+        shooter.loadout.weapon = "blaster"
+        now = time.monotonic()
+
+        game.use_weapon(shooter, now)
+
+        self.assertEqual(game.mines, [])
+        self.assertEqual(target.hp, MAX_HP - BLASTER_DAMAGE)
+
+    def test_destruction_costs_a_life_and_keeps_the_car_in_the_battle(self):
+        game, (attacker, victim) = self.game(straight_track())
+        place(attacker, 0, 0.1, lane=23)
+        place(victim, 0, 0.5, lane=23)
+        now = time.monotonic()
+
+        game.damage(victim, attacker, MAX_HP, now)
+
+        self.assertEqual(victim.lives, BATTLE_LIVES - 1)
+        self.assertFalse(victim.eliminated)
+        self.assertAlmostEqual(victim.dead_until, now + DEATH_STOP_S)
+        self.assertIsNone(game.winner)
+        self.assertEqual(attacker.kills, 1)
+
+    def test_battle_ranking_keeps_active_cars_ahead_of_parked_cars(self):
+        game, (active, parked) = self.game(straight_track())
+        active.lives = 4
+        active.kills = 1
+        parked.source = None
+        parked.ai = False
+        parked.lives = BATTLE_LIVES
+        parked.kills = 0
+
+        self.assertIs(game.ranking()[0], active)
+
+    def test_last_car_with_lives_wins_after_the_final_destruction(self):
+        game, (attacker, victim) = self.game(straight_track())
+        place(attacker, 0, 0.1, lane=23)
+        place(victim, 0, 0.5, lane=23)
+        victim.lives = 1
+        now = time.monotonic()
+
+        game.damage(victim, attacker, MAX_HP, now)
+
+        self.assertEqual(victim.lives, 0)
+        self.assertTrue(victim.eliminated)
+        self.assertTrue(victim.is_dead(now + 10))
+        self.assertIs(game.winner, attacker)
+        self.assertTrue(game.finished)
 
 
 if __name__ == '__main__':
