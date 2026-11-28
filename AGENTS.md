@@ -6,9 +6,9 @@ Wenn es sinnvoll erscheint, darfst du auch andere Projekte (Partydrive, Anki SDK
 oder das Internet recherchieren.
 
 ## Sicherheit
-Du greifst ausschließlich auf den Projektordner zu. Andere Dateien und Informationen
-sind tabu – auch reines Lesen ist nicht erlaubt. Einzige Ausnahme: Das Bluetooth-Modul
-darfst du bedienen.
+Du greifst ausschließlich auf den Projektordner zu. Andere Dateien, Ordner und
+Informationen sind tabu – auch reines Lesen ist nicht erlaubt. Einzige Ausnahme:
+Das Bluetooth-Modul darfst du bedienen.
 
 ## Testen
 Prüfe, wann immer möglich, ob deine Änderungen meine Anforderungen wirklich erfüllen –
@@ -17,9 +17,9 @@ keine anderen Teile des Programms beschädigst. Halte deine Änderungen so klein
 möglich und ändere nur den Bereich, den meine Anforderung tatsächlich betrifft.
 
 Tests auf den echten Autos sind erlaubt. Halte die Fahrten dabei so kurz wie möglich
-und nur so lang wie nötig. Kann der Akku leer werden, frage vorher nach und warte,
-bis ich wieder freigebe. Es ist auch möglich, dass ein Auto bereits von einem anderen
-Agent belegt ist.
+und nur so lang wie nötig. Wenn der Akku währenddessen leer geht, frage nach und
+warte, bis ich wieder freigebe. Es ist auch möglich, dass ein Auto bereits von einem
+anderen Agent belegt ist.
 
 ## Nachfragen
 Bei Unklarheiten frage nach. Setze ausschließlich um, was ich dir sage. Eigene
