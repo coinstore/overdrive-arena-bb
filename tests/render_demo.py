@@ -110,7 +110,7 @@ def main(out_dir: Path):
     pygame.image.save(screen, str(out_dir / "render_racemode.png"))
     loadouts = {kb: Loadout()}
     r.draw_lobby(game, [kb], {kb: 1}, {}, loadouts, {kb: (0, 0)}, "cars", False,
-                 "RACE mode: laps only, powerups only", "A/Enter choose · B release · X/Tab AI · Y/T scan", "A/Enter equip · Up/Down slot · Left/Right item")
+                 "", "A/Enter choose · B release · X/Tab AI · Y/T scan", "A/Enter equip · Up/Down slot · Left/Right item")
     pygame.image.save(screen, str(out_dir / "render_pairing_racemode.png"))
     game.mode = "battle"
     kb2 = Keyboard(); kb2.name = "Xbox One S Controller"; kb2.short = "P1"
@@ -118,7 +118,7 @@ def main(out_dir: Path):
     loadouts = {kb2: Loadout(), kb: Loadout()}
     r.draw_lobby(game, [kb2, kb], {kb: 1, kb2: 0}, {kb2: cars[0]}, loadouts,
                  {kb2: (0, 0), kb: (1, 0)}, "cars", False,
-                 "P1 (Xbox One S Controller) drives X52", "A/Enter choose · B release · X/Tab AI · Y/T scan", "A/Enter equip · Up/Down slot · Left/Right item")
+                 "", "A/Enter choose · B release · X/Tab AI · Y/T scan", "A/Enter equip · Up/Down slot · Left/Right item")
     pygame.image.save(screen, str(out_dir / "render_pairing.png"))
     r.draw_lobby(game, [kb2, kb], {kb: 1, kb2: 0}, {kb2: cars[0]}, loadouts,
                  {kb2: (0, 1), kb: (0, 0)}, "garage", False,

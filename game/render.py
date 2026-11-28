@@ -60,6 +60,154 @@ def glow(surface: pygame.Surface, pos: tuple[int, int], radius: int, color, stre
     surface.blit(s, (pos[0] - r, pos[1] - r))
 
 
+def _shade(color, factor: float) -> tuple:
+    return tuple(max(0, min(255, int(c * factor))) for c in color[:3])
+
+
+CAR_DARK = (13, 14, 18)
+CAR_TIRE = (21, 22, 27)
+CAR_TIRE_HI = (48, 51, 62)
+CAR_RIM = (146, 152, 168)
+CAR_GLASS = (48, 82, 116)
+CAR_GLASS_HI = (106, 168, 214)
+CAR_LIGHT = (255, 246, 190)
+CAR_TAIL = (238, 62, 56)
+CAR_METAL = (150, 156, 172)
+
+
+def _car_wheel(s: pygame.Surface, x: int, y: int, w: int, h: int, far: bool = False,
+               accent=None) -> None:
+    tire = (15, 16, 20) if far else CAR_TIRE
+    pygame.draw.rect(s, CAR_DARK, (x, y + 1, w, h - 2))
+    pygame.draw.rect(s, CAR_DARK, (x + 1, y, w - 2, h))
+    pygame.draw.rect(s, tire, (x + 1, y + 1, w - 2, h - 2))
+    pygame.draw.rect(s, tire, (x + 2, y, w - 4, h))
+    rim = (46, 49, 60) if far else CAR_RIM
+    pygame.draw.rect(s, (28, 30, 37), (x + w // 2 - 2, y + h // 2 - 2, 4, 4))
+    pygame.draw.rect(s, rim, (x + w // 2 - 1, y + h // 2 - 1, 3, 3))
+    if not far:
+        pygame.draw.rect(s, _shade(rim, 1.35), (x + w // 2 - 1, y + h // 2 - 1, 1, 1))
+        pygame.draw.rect(s, (25, 27, 33) if accent is None else accent,
+                         (x + w // 2, y + h // 2 + 1, 1, 1))
+        pygame.draw.rect(s, CAR_TIRE_HI, (x + 2, y + 1, w - 4, 1))
+
+
+def _car_shadow(s: pygame.Surface) -> None:
+    pygame.draw.polygon(s, (9, 10, 13), [(3, 21), (8, 22), (35, 22), (41, 21), (35, 20), (9, 20)])
+    pygame.draw.line(s, (26, 28, 35), (9, 21), (34, 21))
+
+
+def _car_sport(s: pygame.Surface, body, kind: str, accent=None) -> None:
+    out = [(1, 15), (2, 12), (6, 11), (10, 10), (13, 6), (22, 5), (26, 9), (32, 10),
+           (38, 11), (41, 13), (42, 15), (42, 17), (39, 18), (6, 18), (2, 16)]
+    fill = [(2, 15), (3, 13), (6, 12), (11, 11), (14, 7), (21, 6), (25, 10), (31, 11),
+            (37, 12), (40, 14), (41, 15), (41, 16), (38, 17), (7, 17), (3, 16)]
+    pygame.draw.polygon(s, CAR_DARK, out)
+    pygame.draw.polygon(s, body, fill)
+    # cabin and glass
+    pygame.draw.polygon(s, _shade(body, 0.72), [(13, 8), (15, 6), (21, 6), (25, 9), (17, 10)])
+    pygame.draw.polygon(s, CAR_GLASS, [(15, 7), (21, 7), (23, 9), (16, 9)])
+    pygame.draw.polygon(s, CAR_GLASS_HI, [(16, 7), (18, 7), (17, 8)])
+    pygame.draw.polygon(s, CAR_GLASS_HI, [(24, 7), (25, 9), (22, 9)])
+    pygame.draw.line(s, CAR_DARK, (22, 7), (22, 9), 1)
+    pygame.draw.rect(s, (206, 210, 220), (18, 7, 2, 1))
+    pygame.draw.rect(s, (66, 78, 100), (18, 8, 2, 1))
+    pygame.draw.line(s, _shade(body, 1.22), (15, 5), (21, 5), 1)
+    # beltline, door and fender highlights
+    pygame.draw.line(s, _shade(body, 1.22), (5, 12), (30, 12), 1)
+    pygame.draw.line(s, _shade(body, 0.55), (19, 12), (19, 16), 1)
+    pygame.draw.line(s, _shade(body, 1.3), (2, 11), (11, 10), 1)
+    pygame.draw.line(s, _shade(body, 1.3), (31, 11), (38, 12), 1)
+    pygame.draw.rect(s, _shade(body, 1.3), (22, 13, 2, 1))
+    # front fascia, lights and grille
+    pygame.draw.rect(s, CAR_DARK, (39, 13, 3, 5))
+    pygame.draw.rect(s, _shade(body, 0.5), (39, 14, 3, 3))
+    pygame.draw.rect(s, CAR_LIGHT, (40, 13, 2, 2))
+    pygame.draw.rect(s, (255, 255, 235), (40, 13, 1, 1))
+    pygame.draw.rect(s, CAR_LIGHT, (37, 12, 1, 1))
+    pygame.draw.rect(s, CAR_DARK, (37, 17, 6, 2))
+    pygame.draw.rect(s, _shade(body, 0.55), (38, 17, 4, 1))
+    # tail light and side intake
+    pygame.draw.rect(s, CAR_TAIL, (1, 13, 2, 3))
+    pygame.draw.rect(s, (255, 150, 140), (1, 13, 1, 1))
+    pygame.draw.polygon(s, CAR_DARK, [(27, 14), (33, 14), (35, 16), (28, 16)])
+    pygame.draw.polygon(s, _shade(body, 1.35), [(28, 14), (32, 14), (33, 15), (29, 15)])
+    _car_wheel(s, 3, 11, 9, 10, accent=accent)
+    _car_wheel(s, 31, 12, 9, 10, accent=accent)
+    if kind == "x52":
+        # tall rear wing on two visible struts
+        pygame.draw.rect(s, _shade(body, 0.72), (6, 6, 2, 5))
+        pygame.draw.rect(s, _shade(body, 0.72), (10, 6, 2, 5))
+        pygame.draw.rect(s, CAR_DARK, (0, 3, 14, 4))
+        pygame.draw.rect(s, _shade(body, 0.95), (1, 4, 12, 2))
+        pygame.draw.rect(s, _shade(body, 1.4), (2, 4, 8, 1))
+        pygame.draw.rect(s, CAR_TAIL, (0, 3, 2, 4))
+        pygame.draw.rect(s, CAR_DARK, (2, 17, 5, 1))
+    elif kind == "dynamo":
+        # integrated trunk lip and chrome trim
+        pygame.draw.line(s, _shade(body, 1.25), (2, 11), (7, 11), 1)
+        pygame.draw.rect(s, _shade(body, 1.3), (3, 13, 4, 1))
+    else:
+        pygame.draw.rect(s, CAR_DARK, (1, 8, 9, 3))
+        pygame.draw.rect(s, _shade(body, 0.85), (2, 9, 7, 1))
+
+
+def _car_mammoth(s: pygame.Surface, body, accent=None) -> None:
+    out = [(1, 14), (2, 11), (5, 9), (9, 8), (11, 3), (27, 2), (30, 8), (37, 9),
+           (41, 11), (43, 14), (43, 18), (40, 19), (6, 19), (2, 17)]
+    fill = [(2, 14), (3, 11), (6, 10), (10, 9), (12, 4), (26, 3), (29, 9), (36, 10),
+            (40, 12), (42, 14), (42, 18), (39, 18), (7, 18), (3, 16)]
+    pygame.draw.polygon(s, CAR_DARK, out)
+    pygame.draw.polygon(s, body, fill)
+    # tall cabin with split windows
+    pygame.draw.polygon(s, _shade(body, 0.72), [(12, 8), (13, 4), (26, 3), (28, 9), (16, 10)])
+    pygame.draw.polygon(s, CAR_GLASS, [(14, 6), (20, 6), (20, 9), (15, 9)])
+    pygame.draw.polygon(s, CAR_GLASS, [(21, 6), (26, 5), (27, 8), (21, 9)])
+    pygame.draw.line(s, CAR_DARK, (20, 6), (20, 9), 1)
+    pygame.draw.polygon(s, CAR_GLASS_HI, [(15, 6), (18, 6), (16, 7)])
+    pygame.draw.polygon(s, CAR_GLASS_HI, [(22, 5), (25, 5), (23, 6)])
+    pygame.draw.rect(s, (206, 210, 220), (18, 6, 2, 1))
+    # roof rack with lamps
+    pygame.draw.rect(s, _shade(body, 0.6), (11, 2, 16, 1))
+    for lx in (12, 16, 20, 24):
+        pygame.draw.rect(s, CAR_DARK, (lx - 1, 0, 4, 2))
+        pygame.draw.rect(s, (255, 220, 96), (lx, 0, 2, 1))
+    # cladding and bull bar
+    pygame.draw.rect(s, (46, 50, 60), (5, 16, 34, 2))
+    pygame.draw.rect(s, (28, 31, 39), (5, 17, 34, 1))
+    pygame.draw.rect(s, CAR_METAL, (40, 11, 2, 7))
+    pygame.draw.rect(s, CAR_METAL, (41, 12, 2, 1))
+    pygame.draw.rect(s, CAR_METAL, (41, 15, 2, 1))
+    pygame.draw.rect(s, CAR_DARK, (42, 11, 1, 7))
+    # lamps, grille, tail and door
+    pygame.draw.rect(s, CAR_LIGHT, (40, 12, 2, 2))
+    pygame.draw.rect(s, CAR_TAIL, (1, 12, 2, 3))
+    pygame.draw.rect(s, CAR_DARK, (29, 12, 9, 2))
+    pygame.draw.rect(s, _shade(body, 0.7), (30, 12, 7, 1))
+    pygame.draw.line(s, _shade(body, 0.55), (21, 9), (21, 16), 1)
+    pygame.draw.rect(s, _shade(body, 1.25), (23, 12, 4, 1))
+    _car_wheel(s, 3, 10, 10, 11, accent=accent)
+    _car_wheel(s, 30, 11, 10, 11, accent=accent)
+
+
+def car_sprite(model: str, body, accent=None) -> pygame.Surface:
+    """44x24 pixel hero car, front three-quarter view."""
+    s = pygame.Surface((44, 24), pygame.SRCALPHA)
+    _car_shadow(s)
+    _car_wheel(s, 8, 10, 6, 6, far=True)
+    _car_wheel(s, 34, 11, 6, 6, far=True)
+    m = model.lower()
+    if "mammoth" in m:
+        _car_mammoth(s, body, accent)
+    elif "x52" in m:
+        _car_sport(s, body, "x52", accent)
+    elif "dynamo" in m:
+        _car_sport(s, body, "dynamo", accent)
+    else:
+        _car_sport(s, body, "sport", accent)
+    return s
+
+
 def draw_battery_icon(surface, x: int, y: int, w: int, h: int, pct: Optional[int], color) -> None:
     pygame.draw.rect(surface, DIM, (x, y, w, h), 1, border_radius=2)
     pygame.draw.rect(surface, DIM, (x + w, y + h // 4, 3, h // 2), border_radius=1)
@@ -323,6 +471,7 @@ class Renderer:
         self.map_key: Optional[tuple] = None
         self._menu_bg: Optional[pygame.Surface] = None
         self._menu_bg_key: Optional[tuple] = None
+        self._car_sprites: dict[tuple, pygame.Surface] = {}
         self.buttons: dict[str, pygame.Rect] = {}   # clickable areas of the current screen
 
     # ---- helpers ----
@@ -349,6 +498,24 @@ class Renderer:
                              border_top_left_radius=radius, border_top_right_radius=radius)
         pygame.draw.rect(self.screen, border, rect, 2, border_radius=radius)
 
+    def _draw_status_toast(self, status: str, w: int, h: int) -> None:
+        """Short warning toast above the control deck; routine confirmations are gone."""
+        if not status:
+            return
+        txt = status[:110]
+        while len(txt) > 8 and self.small.size(txt)[0] > w - 220:
+            txt = txt[:-2].rstrip() + ".."
+        box_w = min(w - 160, self.small.size(txt)[0] + 52)
+        x, y = (w - box_w) // 2, h - 112
+        pygame.draw.rect(self.screen, (6, 7, 10), (x + 3, y + 3, box_w, 20))
+        pygame.draw.rect(self.screen, (28, 21, 14), (x, y, box_w, 20))
+        pygame.draw.rect(self.screen, WARN, (x, y, box_w, 20), 1)
+        pygame.draw.polygon(self.screen, WARN,
+                            [(x + 12, y + 16), (x + 18, y + 4), (x + 24, y + 16)])
+        pygame.draw.rect(self.screen, (30, 22, 12), (x + 17, y + 8, 2, 4))
+        pygame.draw.rect(self.screen, (30, 22, 12), (x + 17, y + 13, 2, 1))
+        self.text(txt, (x + 34, y + 3), TEXT, self.small)
+
     def machine_panel(self, rect: pygame.Rect, fill=PANEL, accent=(120, 170, 255),
                       border=(58, 60, 72), shadow: int = 4) -> None:
         self.pixel_panel(rect, fill, border, shadow=shadow, accent=accent, radius=2)
@@ -360,14 +527,16 @@ class Renderer:
             pygame.draw.rect(self.screen, (92, 96, 112), (bx, by, 4, 4))
             pygame.draw.rect(self.screen, (36, 38, 48), (bx + 1, by + 1, 2, 2))
 
-    def draw_lift(self, x: int, y: int, w: int, h: int = 8) -> None:
-        pygame.draw.rect(self.screen, (8, 9, 12), (x + 2, y + 2, w, h))
-        pygame.draw.rect(self.screen, (34, 36, 44), (x, y, w, h))
+    def draw_podium(self, x: int, y: int, w: int, color, h: int = 8) -> None:
+        """Low display platform with a player-coloured light strip."""
+        pygame.draw.rect(self.screen, (8, 9, 12), (x + 3, y + 3, w, h))
+        pygame.draw.rect(self.screen, (32, 34, 42), (x, y, w, h))
         pygame.draw.rect(self.screen, (12, 13, 17), (x, y, w, h), 2)
-        block = 8
-        for i, sx in enumerate(range(x + 3, x + w - 3, block)):
-            col = HAZARD if i % 2 == 0 else HAZARD_DARK
-            pygame.draw.rect(self.screen, col, (sx, y + 2, min(block - 2, x + w - 3 - sx), h - 4))
+        pygame.draw.line(self.screen, (62, 66, 80), (x + 3, y + 2), (x + w - 3, y + 2), 1)
+        pygame.draw.rect(self.screen, _shade(color, 0.55), (x + 10, y + h - 3, w - 20, 2))
+        pygame.draw.rect(self.screen, color, (x + 10, y + h - 3, (w - 20) // 2, 2))
+        for fx in (x + 8, x + w - 12):
+            pygame.draw.rect(self.screen, (18, 19, 24), (fx, y + h, 4, 3))
 
     def draw_pegboard(self, rect: pygame.Rect) -> None:
         pygame.draw.rect(self.screen, (18, 20, 26), rect)
@@ -458,72 +627,20 @@ class Renderer:
         return total * 9
 
     def draw_pixel_car(self, cx: int, cy: int, body, outline, scale: int = 4,
-                       model: str = "") -> None:
-        px = pygame.Surface((24, 12), pygame.SRCALPHA)
-        dark = (16, 17, 22)
-        glass = (46, 70, 104)
-        light = (255, 250, 210)
-        red = (232, 64, 64)
-        m = model.lower()
-        if "mammoth" in m:
-            body_rect = (1, 2, 22, 8)
-            roof = (7, 2, 8, 8)
-            windshield = (15, 3, 2, 6)
-            nose = (22, 4, 2, 4)
-        elif "dynamo" in m:
-            body_rect = (3, 3, 18, 6)
-            roof = (9, 3, 5, 6)
-            windshield = (13, 4, 2, 4)
-            nose = (21, 4, 2, 4)
-        elif "x52" in m:
-            body_rect = (2, 3, 19, 6)
-            roof = (7, 3, 6, 6)
-            windshield = (12, 4, 3, 4)
-            nose = (21, 4, 2, 4)
-        else:
-            body_rect = (2, 3, 19, 6)
-            roof = (8, 3, 6, 6)
-            windshield = (13, 4, 3, 4)
-            nose = (21, 4, 2, 4)
-        x, y, w, h = body_rect
-        pygame.draw.rect(px, outline, body_rect)
-        pygame.draw.rect(px, body, (x + 1, y + 1, w - 2, h - 2))
-        # wheels / side skirts
-        pygame.draw.rect(px, dark, (x + 2, y - 1, 4, 2))
-        pygame.draw.rect(px, dark, (x + 2, y + h - 1, 4, 2))
-        pygame.draw.rect(px, dark, (x + w - 7, y - 1, 4, 2))
-        pygame.draw.rect(px, dark, (x + w - 7, y + h - 1, 4, 2))
-        # cockpit and windshield
-        pygame.draw.rect(px, (26, 28, 36), roof)
-        pygame.draw.rect(px, glass, windshield)
-        # model accents
-        if "mammoth" in m:
-            pygame.draw.rect(px, (176, 190, 210), (4, y + 1, 1, h - 2))
-            pygame.draw.rect(px, (96, 110, 135), (5, y + 2, 2, h - 4))
-        elif "x52" in m:
-            pygame.draw.rect(px, red, (3, y + 2, 2, h - 4))
-            pygame.draw.rect(px, (255, 120, 90), (4, y + 2, 1, 1))
-        elif "dynamo" in m:
-            pygame.draw.rect(px, (210, 220, 235), (4, y + 1, 1, h - 2))
-        else:
-            pygame.draw.rect(px, outline, (3, y + 2, 1, h - 4))
-        # spoiler
-        pygame.draw.rect(px, dark, (x - 2, y + 1, 3, h - 2))
-        pygame.draw.rect(px, outline, (x - 2, y + 1, 1, h - 2))
-        # nose and lights
-        pygame.draw.rect(px, dark, nose)
-        pygame.draw.rect(px, outline, (nose[0], nose[1], nose[2], 1))
-        pygame.draw.rect(px, light, (nose[0] + 1, nose[1] + 1, 1, 1))
-        pygame.draw.rect(px, light, (nose[0] + 1, nose[1] + nose[3] - 2, 1, 1))
-        pygame.draw.rect(px, red, (x, y + 1, 1, 1))
-        pygame.draw.rect(px, red, (x, y + h - 2, 1, 1))
-        img = pygame.transform.scale(px, (24 * scale, 12 * scale))
-        ground_w = 20 * scale
-        pygame.draw.rect(self.screen, (6, 7, 10),
-                         (cx - ground_w // 2 + 2, cy + 6 * scale + 2, ground_w, 3))
-        pygame.draw.rect(self.screen, outline,
-                         (cx - ground_w // 2, cy + 6 * scale + 1, ground_w, 1))
-        self.screen.blit(img, (cx - img.get_width() // 2, cy - img.get_height() // 2))
+                       model: str = "", lights: bool = False) -> None:
+        key = (model.lower(), tuple(body), tuple(outline), scale)
+        img = self._car_sprites.get(key)
+        if img is None:
+            px = car_sprite(model, body, outline)
+            img = pygame.transform.scale(px, (44 * scale, 24 * scale))
+            self._car_sprites[key] = img
+        ground = cy + 9 * scale
+        glow(self.screen, (cx, ground - 3 * scale // 2), int(16 * scale), outline,
+             0.55 if scale >= 3 else 0.3)
+        if lights:
+            glow(self.screen, (cx + 20 * scale, cy + scale), int(6 * scale),
+                 (255, 240, 180), 0.45)
+        self.screen.blit(img, (cx - 22 * scale, cy - 12 * scale))
 
     def draw_pixel_icon(self, kind: str, cx: int, cy: int, color, scale: int = 3) -> None:
         px = pygame.Surface((12, 12), pygame.SRCALPHA)
@@ -654,39 +771,78 @@ class Renderer:
                 pygame.draw.rect(self.screen, (20, 22, 28), (door_x + 4, sy, door_w - 8, 2))
                 pygame.draw.rect(self.screen, (34, 36, 45), (door_x + 4, sy + 2, door_w - 8, 1))
             pygame.draw.rect(self.screen, (72, 66, 45), (door_x + door_w // 2 - 16, 94, 32, 4))
-        # horizontal beams and floor edge
-        for by in (118, wall_bottom - 30):
+        # horizontal beams
+        for by in (118, wall_bottom - 34):
             pygame.draw.rect(self.screen, (30, 33, 41), (0, by, w, 8))
             pygame.draw.line(self.screen, (46, 49, 60), (0, by), (w, by), 1)
             pygame.draw.line(self.screen, (9, 10, 13), (0, by + 7), (w, by + 7), 1)
-        pygame.draw.rect(self.screen, (28, 30, 38), (0, wall_bottom - 3, w, 3))
-        # floor perspective seams and bay dashes
-        vx, vy = w // 2, wall_bottom - 40
-        for fx in range(-w, w * 2, 140):
-            pygame.draw.line(self.screen, FLOOR_LINE, (vx, vy), (fx, h), 1)
-        for fy in range(wall_bottom + 42, h, 54):
+        # hazard edge where the wall meets the floor
+        pygame.draw.rect(self.screen, (24, 26, 33), (0, wall_bottom - 10, w, 10))
+        for i, hx in enumerate(range(0, w, 16)):
+            col = HAZARD if i % 2 == 0 else HAZARD_DARK
+            pygame.draw.rect(self.screen, col, (hx, wall_bottom - 8, 16, 6))
+        pygame.draw.line(self.screen, (58, 62, 76), (0, wall_bottom - 10), (w, wall_bottom - 10), 1)
+        pygame.draw.line(self.screen, (8, 9, 12), (0, wall_bottom - 2), (w, wall_bottom - 2), 1)
+        # concrete floor: large slabs with clean joints, no fake perspective
+        row_h = 64
+        for row, fy in enumerate(range(wall_bottom, h, row_h)):
+            if row % 2:
+                pygame.draw.rect(self.screen, (13, 14, 18), (0, fy, w, min(row_h, h - fy)))
             pygame.draw.line(self.screen, FLOOR_LINE, (0, fy), (w, fy), 1)
-        for bx in (72, w - 72):
-            for by in range(wall_bottom + 26, h - 82, 34):
-                pygame.draw.rect(self.screen, (70, 60, 32), (bx - 2, by, 4, 18))
-        # oil stains and cables (fixed, low contrast)
+            offset = 40 if row % 2 else 0
+            for fx in range(offset, w, 80):
+                pygame.draw.line(self.screen, FLOOR_LINE,
+                                 (fx, fy), (fx, min(h, fy + row_h)), 1)
+        # pit lane: asphalt band with double yellow edges and a dashed centre line
+        lane_y = max(wall_bottom + 24, h - 250)
+        lane_h = 44
+        pygame.draw.rect(self.screen, (9, 10, 14), (0, lane_y, w, lane_h))
+        pygame.draw.line(self.screen, (66, 58, 32), (0, lane_y + 1), (w, lane_y + 1), 1)
+        pygame.draw.line(self.screen, (66, 58, 32), (0, lane_y + lane_h - 2), (w, lane_y + lane_h - 2), 1)
+        for fx in range(0, w, 64):
+            pygame.draw.rect(self.screen, (58, 52, 30), (fx, lane_y + 4, 30, 2))
+            pygame.draw.rect(self.screen, (58, 52, 30), (fx + 8, lane_y + lane_h - 8, 30, 2))
+        for fx in range(10, w, 72):
+            pygame.draw.rect(self.screen, (44, 40, 28), (fx + 30, lane_y + lane_h // 2 - 1, 30, 2))
+        # long drain grate in the lane
+        grate = pygame.Rect(w // 2 - 110, lane_y + 12, 220, 18)
+        pygame.draw.rect(self.screen, (6, 7, 10), grate.move(1, 1))
+        pygame.draw.rect(self.screen, (20, 22, 28), grate)
+        pygame.draw.rect(self.screen, (46, 49, 60), grate, 1)
+        for gx in range(grate.x + 5, grate.right - 3, 7):
+            pygame.draw.rect(self.screen, (9, 10, 13), (gx, grate.y + 3, 3, grate.height - 6))
+        # tyre marks and a couple of faint oil spots, kept low contrast
+        for side in (-1, 1):
+            x0 = w // 2 + side * 210
+            pygame.draw.lines(self.screen, (15, 16, 21), False,
+                              [(x0, lane_y + lane_h + 8), (x0 + 26, lane_y + lane_h + 2),
+                               (x0 + 60, lane_y + lane_h + 10), (x0 + 96, lane_y + lane_h + 3)], 3)
         rnd = random.Random(19)
-        for _ in range(7):
-            ox = rnd.randrange(40, w - 40)
-            oy = rnd.randrange(wall_bottom + 20, h - 20)
-            rw = rnd.randrange(18, 52)
-            rh = rnd.randrange(5, 12)
+        for _ in range(3):
+            ox = rnd.randrange(90, w - 90)
+            oy = rnd.randrange(wall_bottom + 18, lane_y - 18)
+            rw = rnd.randrange(26, 54)
+            rh = rnd.randrange(5, 9)
             pygame.draw.ellipse(self.screen, (16, 17, 22), (ox - rw // 2, oy - rh // 2, rw, rh))
-        for i in range(3):
-            x0 = 18 + i * 11
-            pygame.draw.lines(self.screen, (23, 25, 32), False,
-                              [(x0, h - 90), (x0 + 24, h - 130), (x0 + 52, h - 112), (x0 + 76, h - 150)], 3)
-        # side props in the safe gutters
-        self._draw_tire_stack(12, h - 330)
-        self._draw_toolbox(10, h - 218)
-        self._draw_barrel(w - 40, h - 300)
-        self._draw_cone(w - 38, h - 198)
-        # wall poster and a small neon strip in the open top-right area
+        # wall-mounted tool board in the left gutter
+        board = pygame.Rect(10, 156, 36, 92)
+        pygame.draw.rect(self.screen, (8, 9, 12), board.move(2, 2))
+        pygame.draw.rect(self.screen, (27, 30, 37), board)
+        pygame.draw.rect(self.screen, (52, 55, 66), board, 2)
+        for py in range(board.y + 10, board.bottom - 8, 10):
+            for px in range(board.x + 6, board.right - 4, 10):
+                pygame.draw.rect(self.screen, (35, 38, 47), (px, py, 1, 1))
+        pygame.draw.rect(self.screen, (118, 122, 136), (board.x + 8, board.y + 14, 2, 26))
+        pygame.draw.rect(self.screen, (118, 122, 136), (board.x + 6, board.y + 12, 6, 4))
+        pygame.draw.rect(self.screen, (96, 72, 40), (board.x + 20, board.y + 14, 2, 18))
+        pygame.draw.rect(self.screen, (150, 154, 168), (board.x + 22, board.y + 14, 2, 6))
+        pygame.draw.rect(self.screen, (70, 76, 90), (board.x + 16, board.y + 44, 12, 3))
+        # ordered props in the side gutters
+        self._draw_tire_stack(12, wall_bottom + 18)
+        self._draw_toolbox(10, lane_y + 4)
+        self._draw_barrel(w - 40, wall_bottom + 18)
+        self._draw_cone(w - 38, lane_y + 2)
+        # wall poster and warm pools of light, kept subtle
         poster = pygame.Rect(w - 156, 74, 118, 40)
         pygame.draw.rect(self.screen, (10, 11, 14), poster.move(2, 2))
         pygame.draw.rect(self.screen, (24, 27, 34), poster)
@@ -696,12 +852,11 @@ class Renderer:
         pygame.draw.rect(self.screen, (170, 140, 58), (poster.x + 54, poster.y + 10, 52, 3))
         pygame.draw.rect(self.screen, (78, 84, 98), (poster.x + 54, poster.y + 20, 36, 2))
         pygame.draw.rect(self.screen, (78, 84, 98), (poster.x + 54, poster.y + 27, 26, 2))
-        # warm pools of light, kept subtle
         glow(self.screen, (int(w * 0.22), 18), 190, (255, 176, 92), 0.16)
         glow(self.screen, (int(w * 0.78), 18), 170, (255, 176, 92), 0.12)
-        # sparse dither
+        # sparse dither on the wall only
         for gx in range(8, w, 16):
-            for gy in range(8, h, 16):
+            for gy in range(8, wall_bottom - 12, 16):
                 if (gx + gy) % 48 == 0:
                     pygame.draw.rect(self.screen, (19, 21, 27), (gx, gy, 2, 2))
 
@@ -884,15 +1039,17 @@ class Renderer:
         if claimed or (game.ai_enabled and c.ai_pref):
             self.ready_lamp_right(box.right - 12, box.y + 15, c)
 
-        large = box.height >= 200
-        car_y = box.y + (72 if large else 48)
+        name_y = box.y + max(78, box.height - 88)
+        scale = 4 if box.height >= 220 else (3 if box.height >= 190 else 2)
+        car_y = max(box.y + 44, name_y - 6 - 12 * scale)
         bob = int(round(math.sin(now * 2.2 + c.index * 1.7) * 1.5))
-        lift_y = box.y + (103 if large else 67)
-        lift_w = min(210 if large else 150, box.width - 80)
-        self.draw_lift(box.centerx - lift_w // 2, lift_y, lift_w, 8 if large else 6)
+        podium_y = car_y + 9 * scale - 2
+        podium_w = min(210, box.width - 100)
+        self.draw_podium(box.centerx - podium_w // 2, podium_y, podium_w, c.color,
+                         8 if scale >= 3 else 6)
         self.draw_pixel_car(box.centerx, car_y + bob, c.body_color, c.color,
-                            5 if large else 3, c.name)
-        self.text(c.name, (box.x + 16, box.y + max(78, box.height - 88)), TEXT, self.pixel_big)
+                            scale, c.name, lights=claimed or bool(hovering))
+        self.text(c.name, (box.x + 16, name_y), TEXT, self.pixel_big)
         battery_y = box.y + max(96, box.height - 54)
         self.battery_row(c, box.x + 16, battery_y, box.width - 32, detailed=True)
 
@@ -939,19 +1096,25 @@ class Renderer:
 
         cy = box.y + header_h + 8
         tall = box.height >= 400
-        car_h = 76 if tall else 40
+        car_h = 96 if tall else 44
         if car is not None:
             bob = int(round(math.sin(now * 2.2 + car.index * 1.7) * 1.5))
             if tall:
-                self.draw_lift(box.x + 1, cy + 57, 110, 8)
-                self.draw_pixel_car(box.x + 56, cy + 32 + bob, car.body_color, car.color, 4, car.name)
-                battery_x = box.x + 120
-                battery_w = box.width - 136
+                car_x = box.x + 92
+                car_y = cy + 46
+                self.draw_podium(car_x - 76, car_y + 34, 152, car.color, 8)
+                self.draw_pixel_car(car_x, car_y + bob, car.body_color, car.color, 4, car.name,
+                                    lights=True)
+                battery_x = box.x + 190
+                battery_w = box.width - 206
             else:
-                self.draw_lift(box.x + 2, cy + 33, 64, 6)
-                self.draw_pixel_car(box.x + 34, cy + 20 + bob, car.body_color, car.color, 2, car.name)
-                battery_x = box.x + 66
-                battery_w = box.width - 82
+                car_x = box.x + 58
+                car_y = cy + 18
+                self.draw_podium(car_x - 40, car_y + 16, 80, car.color, 6)
+                self.draw_pixel_car(car_x, car_y + bob, car.body_color, car.color, 2, car.name,
+                                    lights=True)
+                battery_x = box.x + 110
+                battery_w = box.width - 126
             self.battery_row(car, battery_x, cy + (26 if tall else 12), battery_w, detailed=True)
             self.ready_lamp_right(box.right - 14, cy, car)
         y = cy + car_h
@@ -971,7 +1134,7 @@ class Renderer:
         stats = {"sniper": "LONG SHOT", "blaster": "STRAIGHT SHOT", "mine": "LANE TRAP",
                  "uturn": "180° TURN", "hook": "SLOW TARGET", "anchor": "FULL STOP",
                  "booster": "SPEED BOOST"}
-        tile_h = 104 if box.height >= 400 else 54
+        tile_h = 104 if box.height >= 400 else 50
         compact = box.height < 400
         board = pygame.Rect(box.x + 14, y - 2, box.width - 28,
                             len(sections) * (16 + tile_h + 10) + 2)
@@ -1084,11 +1247,24 @@ class Renderer:
         race_ok = game.can_start(claims.values())
         deck = pygame.Rect(16, H - 86, W - 32, 74)
         self.machine_panel(deck, (20, 22, 28), (255, 176, 70), border=(58, 60, 72), shadow=0)
-        if status:
-            txt = status[:110]
-            sw = min(W - 120, self.small.size(txt)[0] + 16)
-            pygame.draw.rect(self.screen, (16, 18, 24), (56, H - 108, sw, 18))
-            pygame.draw.rect(self.screen, (48, 50, 62), (56, H - 108, sw, 18), 1)
+        # console details: hazard strip, button wells and status LEDs
+        for i, hx in enumerate(range(deck.x + 10, deck.right - 10, 12)):
+            col = HAZARD if i % 2 == 0 else HAZARD_DARK
+            pygame.draw.rect(self.screen, col, (hx, deck.y + 9, 8, 3))
+        left_well = pygame.Rect(22, H - 74, 252 if tab == "garage" else 152, 56)
+        right_well = pygame.Rect(W - 345, H - 79, 322, 62)
+        for well in (left_well, right_well):
+            pygame.draw.rect(self.screen, (7, 8, 11), well.move(2, 2))
+            pygame.draw.rect(self.screen, (15, 16, 21), well)
+            pygame.draw.rect(self.screen, (44, 46, 58), well, 1)
+            pygame.draw.line(self.screen, (62, 66, 80), (well.x + 2, well.y + 2),
+                             (well.right - 2, well.y + 2), 1)
+        for i, led in enumerate(((110, 220, 130), (255, 176, 70), (120, 190, 255))):
+            lx, ly = W - 396 + i * 13, H - 57
+            pygame.draw.rect(self.screen, (6, 7, 10), (lx, ly, 9, 9))
+            pygame.draw.rect(self.screen, led, (lx + 1, ly + 1, 7, 7))
+            pygame.draw.rect(self.screen, led, (lx + 2, ly + 2, 2, 2))
+            pygame.draw.rect(self.screen, (12, 13, 17), (lx, ly, 9, 9), 1)
         if tab == "cars":
             strip_y = H - 172
             content_bottom = strip_y - 12
@@ -1117,8 +1293,6 @@ class Renderer:
             else:
                 self.text("NO CARS CONNECTED", (28, 190), WARN, self.pixel_big)
             self._draw_player_strip(game, sources, claims, src_color, strip_y, 60)
-            if status:
-                self.text(status[:110], (64, H - 105), WARN, self.small)
             self.pixel_button("quit", 28, H - 68, 140, 44, "QUIT", "Esc", (60, 62, 74),
                               font=self.pixel)
             self.text(controls_cars, (186, H - 55), FAINT, self.small)
@@ -1158,8 +1332,6 @@ class Renderer:
                     self._draw_garage_panel(game, s, box, claims, loadouts, cursor, src_color, now)
             else:
                 self.text("NO CONTROLLERS", (28, 190), WARN, self.pixel_big)
-            if status:
-                self.text(status[:110], (64, H - 105), WARN, self.small)
             self.pixel_button("back", 28, H - 68, 240, 44, "BACK: CARS", "Esc / View",
                               (70, 72, 84), font=self.pixel)
             self.text(controls_garage, (286, H - 55), FAINT, self.small)
@@ -1168,6 +1340,7 @@ class Renderer:
                               "Start", OK if race_ok else (60, 62, 74),
                               enabled=race_ok)
 
+        self._draw_status_toast(status, W, H)
         if settings_open:
             self._draw_settings_modal(game)
 

@@ -97,6 +97,15 @@ class App:
     def sources(self) -> list[I.InputSource]:
         return [*self.pads, self.keyboard]
 
+    @property
+    def status(self) -> str:
+        return self._status
+
+    @status.setter
+    def status(self, text: str) -> None:
+        self._status = text
+        self._status_t = time.monotonic()
+
     def connect_cars(self) -> bool:
         a = self.args
         self.renderer.draw_message("Scanning for cars...", [f"{a.scan:.0f} s BLE scan", "cars must be on and off their charger"])
@@ -224,12 +233,10 @@ class App:
             loadout.weapon = item
         else:
             loadout.powerup = item
-        self.status = f"{source.short}: {loadout.weapon_name() if kind == 'weapon' else loadout.powerup_name()} equipped"
         source.rumble(0.25, 0.35, 80)
 
     def open_settings(self) -> None:
         self.settings_open = True
-        self.status = "settings: R / R-stick speed   H / LT+R-stick fair"
 
     def close_settings(self) -> None:
         self.settings_open = False
@@ -257,11 +264,11 @@ class App:
             self.status = "assign a player or AI to a connected car off its charger"
             return
         self.setup_tab = "garage"
-        self.status = "choose one weapon and one powerup"
+        self.status = ""
 
     def back_step(self) -> None:
         self.setup_tab = "cars"
-        self.status = "choose a car"
+        self.status = ""
 
     def handle_setup_click(self, pos: tuple[int, int]) -> Optional[bool]:
         g = self.game
@@ -384,19 +391,16 @@ class App:
                 if owner is s:
                     del self.claims[s]
                     self.assign_player_colors()
-                    self.status = f"{s.short} released {car.name}"
                 elif owner is not None:
                     self.status = f"{car.name} is already driven by {owner.short}"
                 else:
                     self.claims.pop(s, None)          # one car per controller
                     self.claims[s] = car
                     self.assign_player_colors()
-                    self.status = f"{s.short} ({s.name}) drives {car.name}"
                     s.rumble(0.5, 0.5, 200)
             if s.pressed(I.RELEASE) and s in self.claims:
-                released = self.claims.pop(s)
+                self.claims.pop(s)
                 self.assign_player_colors()
-                self.status = f"{s.short} released {released.name}"
             if s.pressed(I.TOGGLE_AI):
                 if car in self.claims.values():
                     self.status = f"{car.name} has a player; release it first"
@@ -404,7 +408,6 @@ class App:
                     self.status = "AI disabled by --no-ai; restart without that option to enable it"
                 else:
                     car.cycle_ai()
-                    self.status = f"{car.name}: AI {car.ai_difficulty.title()}" if car.ai_pref else f"{car.name}: parked"
             if s.pressed(I.LIMIT_UP) or s.pressed(I.LIMIT_DOWN):
                 step = 1 if s.pressed(I.LIMIT_UP) else -1
                 index = self.lap_choices.index(g.lap_target) if g.lap_target in self.lap_choices else 0
@@ -418,8 +421,7 @@ class App:
         g.mode = "race" if g.mode == "battle" else "battle"
         for s in self.sources:
             self.garage_cursor(s)
-        self.status = ("RACE mode: laps only, powerups only" if g.mode == "race"
-                       else "BATTLE mode: weapons, powerups and lives")
+        self.status = ""
 
     def update_identify_lights(self) -> None:
         """Claimed cars keep their headlights on; in the car tab a hovered car blinks."""
@@ -471,7 +473,7 @@ class App:
             # Hold the field on the line until the start button is pressed
             # again; only then begin the 3-2-1 countdown.
             self.state = READY
-            self.status = "press Start to race"
+            self.status = ""
 
     def ready_tick(self, dt: float) -> None:
         g = self.game
@@ -604,7 +606,7 @@ class App:
                 self.assign_player_colors()
                 self.identified.clear()
                 self.state = PAIRING
-                self.status = "back to lobby (cars stopped)"
+                self.status = ""
                 return
             if g.finished and s.pressed(I.READY):
                 g.stop_all()
@@ -612,16 +614,11 @@ class App:
                 return
         g.tick(dt)
         if g.finished and g.finish_celebration_t and time.monotonic() - g.finish_celebration_t > 14.0:
-            winner = g.winner
-            mode = g.mode
             g.stop_all()
             self.assign_player_colors()
             self.identified.clear()
             self.state = PAIRING
-            if winner:
-                self.status = f"{winner.name} won the {'battle' if mode == 'battle' else 'race'} ({winner.driver_label()})"
-            else:
-                self.status = "race over" if mode == "race" else "battle over"
+            self.status = ""
 
     # ------------------------------------------------------------ main loop
     def handle_events(self) -> bool:
@@ -648,7 +645,6 @@ class App:
                             self.cursors[pad] = 0
                             self.garage_cursors[pad] = (0, 0)
                             self.loadouts[pad] = Loadout()
-                            self.status = f"controller connected: {pad.name}"
                         else:
                             pad.close()
                 except Exception as e:  # noqa: BLE001
@@ -710,6 +706,8 @@ class App:
                     self.race_tick(dt)
                 self.keyboard.end_frame()
                 self.maybe_reconnect(t0)
+                if self._status and t0 - self._status_t > 6.0:
+                    self._status = ""    # warnings fade; the lobby stays quiet
                 if t0 - last_batt > 4:
                     for c in self.cars:
                         self.ble.fire(c.car.send(P.battery_request()))

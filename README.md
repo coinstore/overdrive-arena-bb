@@ -53,9 +53,10 @@ cars directly, with the protocol verified on real hardware (firmware 11866) and 
 - **Two modes**: BATTLE (one weapon + one powerup per player, 5 lives, last car wins) or RACE
   (laps only, powerups only, first to N laps wins).
 - **Lobby and garage**: a two-step setup wizard in a pixel-art workshop. Step 1 chooses cars in
-  parking bays with player-coloured ownership and ready lamps; step 2 gives every player their own
-  workbench panel to configure a weapon and powerup at the same time. Silkscreen headings, chunky
-  buttons and a low-contrast garage backdrop keep the UI dense but readable.
+  parking bays with player-coloured ownership, 3/4 hero sprites and ready lamps; step 2 gives every
+  player their own workbench panel to configure a weapon and powerup at the same time. Silkscreen
+  headings, chunky buttons, a structured pit-lane floor and a control-console deck keep the UI dense
+  but readable.
 - **AI drivers** with per-car Easy, Normal, Hard, and Extreme levels, including AI-only races. They brake before curves and accelerate on straights.
 - **Battery and charger tracking**: voltage, estimated %, sag under load (finds tired cells), CHARGING /
   CHARGED when a car sits on its pad, CSV history.

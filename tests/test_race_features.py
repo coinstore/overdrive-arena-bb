@@ -983,6 +983,21 @@ class ControllerTests(unittest.TestCase):
         self.assertIs(self.app.cars[0].source, self.pad)
         self.app.game.begin_grid.assert_called_once()
 
+    def test_claiming_a_car_leaves_the_lobby_quiet(self):
+        self.press(I.SELECT)
+        self.app.pairing_tick()
+        self.assertIs(self.app.claims[self.pad], self.app.cars[0])
+        self.assertEqual(self.app.status, "")
+
+    def test_equipping_a_loadout_leaves_the_lobby_quiet(self):
+        self.app.setup_tab = "garage"
+        self.app.claims[self.pad] = self.app.cars[0]
+        self.app.garage_cursors[self.pad] = (0, 1)
+        self.press(I.SELECT)
+        self.app.pairing_tick()
+        self.assertEqual(self.app.loadouts[self.pad].weapon, "mine")
+        self.assertEqual(self.app.status, "")
+
     def test_claimed_car_takes_player_colour_and_reassigns_ai(self):
         second = CarState(SimpleNamespace(model='Second', connected=True, on_charger=False, battery_mv=0),
                           1, Mock(), 800)
