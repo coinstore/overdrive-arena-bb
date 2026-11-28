@@ -64,6 +64,11 @@ def _shade(color, factor: float) -> tuple:
     return tuple(max(0, min(255, int(c * factor))) for c in color[:3])
 
 
+def _mix(a, b, t: float) -> tuple:
+    t = max(0.0, min(1.0, t))
+    return tuple(int(a[i] * (1.0 - t) + b[i] * t) for i in range(3))
+
+
 CAR_DARK = (13, 14, 18)
 CAR_TIRE = (21, 22, 27)
 CAR_TIRE_HI = (48, 51, 62)
@@ -215,6 +220,35 @@ def draw_battery_icon(surface, x: int, y: int, w: int, h: int, pct: Optional[int
         fill = int((w - 4) * pct / 100)
         if fill > 0:
             pygame.draw.rect(surface, color, (x + 2, y + 2, fill, h - 4), border_radius=1)
+
+
+def battery_level_color(pct: Optional[int], status: str):
+    """Race HUD colour: green, orange, red; unknown stays faint."""
+    if status == "unknown" or pct is None:
+        return FAINT
+    if status in ("critical", "low") or pct <= 20:
+        return BAD
+    if status == "weak" or pct <= 45:
+        return WARN
+    return OK
+
+
+def draw_battery_meter(surface, x: int, y: int, w: int, h: int, pct: Optional[int],
+                       color, segments: int = 5) -> None:
+    """Right-aligned segmented battery: it empties as the charge drops."""
+    body_w = w - 4
+    pygame.draw.rect(surface, (7, 8, 11), (x + 2, y + 2, body_w, h))
+    pygame.draw.rect(surface, (10, 11, 15), (x, y, body_w, h))
+    pygame.draw.rect(surface, color, (x, y, body_w, h), 2)
+    pygame.draw.rect(surface, color, (x + body_w, y + h // 3, 3, h // 3))
+    inner = pygame.Rect(x + 4, y + 4, body_w - 8, h - 8)
+    pygame.draw.rect(surface, (10, 11, 15), inner)
+    lit = 0 if pct is None else max(0, min(segments, math.ceil(pct * segments / 100)))
+    for i in range(segments):
+        sx = inner.x + i * inner.width // segments
+        ex = inner.x + (i + 1) * inner.width // segments - 1
+        col = color if i < lit else (30, 32, 40)
+        pygame.draw.rect(surface, col, (sx, inner.y, max(1, ex - sx), inner.height))
 
 
 class CarView:
@@ -921,19 +955,17 @@ class Renderer:
             self.chip_right(x + w, y - 2, label, col)
 
     def battery_compact(self, c: CarState, right: int, y: int) -> None:
+        """Race HUD: a segmented battery icon, no text."""
         b = c.battery
         st = b.status
-        col = BATTERY_COLORS.get(st, FAINT)
         if st == "charging":
             full = c.car.status is not None and c.car.status.battery_charged
-            label = "FULL" if full else "CHG"
-            self.text_right(label, right, y, OK if full else col, self.small)
-            return
-        pct = f"{b.percent}%" if b.percent is not None else "?"
-        label = pct
-        if st in ("weak", "low", "critical"):
-            label += {"weak": " WEAK", "low": " LOW", "critical": " CRIT"}[st]
-        self.text_right(label, right, y, DIM if st in ("ok", "unknown") else col, self.small)
+            pct = 100 if full else int((time.monotonic() * 55) % 100)
+            color = OK if full else (120, 200, 255)
+        else:
+            pct = b.percent
+            color = battery_level_color(pct, st)
+        draw_battery_meter(self.screen, right - 36, y - 1, 36, 14, pct, color)
 
     # ---- screens ----
     def frame(self) -> None:
@@ -1150,9 +1182,10 @@ class Renderer:
                 selected = (loadout.weapon == item) if kind == "weapon" else (loadout.powerup == item)
                 hovered = cursor == (row, col)
                 pygame.draw.rect(self.screen, (6, 7, 10), card.move(2, 2), border_radius=2)
-                pygame.draw.rect(self.screen, CARD_HI if selected else CARD, card, border_radius=2)
+                pygame.draw.rect(self.screen, _mix(CARD_HI, color, 0.2) if selected else CARD,
+                                 card, border_radius=2)
                 pygame.draw.rect(self.screen, color if selected else (58, 60, 72),
-                                 card, 3 if selected else 2, border_radius=2)
+                                 card, 4 if selected else 2, border_radius=2)
                 icon_scale = 2 if compact else 4
                 self.draw_pixel_icon(icons.get(item, "blaster"), card.centerx,
                                      card.y + (16 if compact else 30), color, icon_scale)
@@ -1170,7 +1203,11 @@ class Renderer:
                     self.screen.blit(dimg, (card.centerx - dimg.get_width() // 2,
                                             card.y + 78))
                 if selected:
-                    self.pixel_check(card.right - 12, card.y + 12, color)
+                    badge = pygame.Rect(card.right - 24, card.y + 6, 18, 18)
+                    pygame.draw.rect(self.screen, (6, 7, 10), badge.move(2, 2))
+                    pygame.draw.rect(self.screen, color, badge)
+                    pygame.draw.rect(self.screen, (12, 13, 17), badge, 1)
+                    self.pixel_check(badge.centerx, badge.centery, (16, 17, 22))
                 elif hovered:
                     self.selection_brackets(card.inflate(6, 6), color)
                 x += tile_w + gap
@@ -1351,34 +1388,31 @@ class Renderer:
         self.pixel_panel(pr, PANEL, (58, 60, 72), shadow=0, radius=2)
         x, y = pr.x + 18, pr.y + 14
         y += self.text("SCANNING TRACK", (x, y), TEXT, self.pixel_title) + 4
-        y += self.text(f"shared map / all cars   ·   elapsed {elapsed:3.0f}s", (x, y), DIM, self.small) + 14
+        y += self.text(f"elapsed {elapsed:3.0f}s", (x, y), DIM, self.small) + 14
         for c, sc in scanners.items():
-            box = pygame.Rect(x, y, pr.width - 36, 92)
+            box = pygame.Rect(x, y, pr.width - 36, 60)
             self.pixel_panel(box, CARD, c.color, shadow=2, accent=c.color, radius=2)
             pygame.draw.rect(self.screen, c.color, (box.x, box.y, 6, box.height))
-            self.text(c.name, (box.x + 18, box.y + 8), TEXT, self.pixel_big)
+            self.text(c.name, (box.x + 18, box.y + 7), TEXT, self.pixel_big)
             with sc.lock:
                 state = sc.state
                 seen = sc.pieces_seen
             if state == "on the charger":
-                col, label = (120, 200, 255), "ON ITS CHARGER - skipped"
+                col, label = (120, 200, 255), "CHARGER"
             elif state == "not on the track":
-                col, label = WARN, "NOT ON THE TRACK - read no codes, stopped"
+                col, label = WARN, "OFF TRACK"
             elif sc.done:
-                col, label = OK, state
+                col, label = OK, "DONE"
             elif sc.stopped:
-                col, label = WARN, state
+                col, label = WARN, "STOPPED"
             elif seen == 0:
-                col, label = DIM, "driving, waiting for the first track code..."
+                col, label = DIM, "SEARCHING"
             else:
-                col, label = TEXT, state
-            self.text(label, (box.x + 18, box.y + 40), col, self.small)
-            details = f"{getattr(sc, 'commanded_speed', 0)} mm/s · {seen} codes · {sc.inferred_boundaries} repairs"
-            self.text(details, (box.x + 18, box.y + 62), FAINT, self.small)
+                col, label = TEXT, f"SCANNING · {seen} PCS"
+            pygame.draw.rect(self.screen, col, (box.x + 18, box.y + 36, 9, 9))
+            pygame.draw.rect(self.screen, (12, 13, 17), (box.x + 18, box.y + 36, 9, 9), 1)
+            self.text(label, (box.x + 34, box.y + 33), col, self.small)
             y += box.height + 8
-        self.text("cars share missing pieces and turns",
-                  (x, y + 6), FAINT, self.small)
-        self.text("400-500 mm/s · lost codes stop that car", (x, y + 24), FAINT, self.small)
         self.text("Back / Esc: cancel", (x, pr.bottom - 30), FAINT, self.small)
 
     def draw_scan_map(self, scanners: dict) -> None:
@@ -1398,7 +1432,8 @@ class Renderer:
         self.text(f"{len(raw)} pieces seen / {len(prefix)} placed / {contributing} cars reporting",
                   (rect.x + 18, rect.y + 48), DIM, self.small)
         if prefix:
-            map_rect = pygame.Rect(rect.x + 12, rect.y + 78, rect.width - 24, max(80, rect.height - 170))
+            map_rect = pygame.Rect(rect.x + 12, rect.y + 78, rect.width - 24,
+                                   max(80, rect.height - 102))
             signature = (tuple((r["id"], r["turn"], r["reversed"]) for r in prefix), tuple(map_rect))
             if getattr(self, "_scan_signature", None) != signature:
                 self._scan_view = MapView(build_track(prefix), map_rect, margin=32)
@@ -1414,16 +1449,6 @@ class Renderer:
             pygame.draw.circle(self.screen, GOLD, end, 7 + int(3 * (1 + math.sin(time.monotonic() * 4))))
         else:
             self.text("Waiting for start / finish codes...", (rect.x + 30, rect.centery), DIM, self.font)
-        y = rect.bottom - 76
-        self.text("OBSERVED SEQUENCE  /  ? = unresolved gap", (rect.x + 18, y), DIM, self.small)
-        width = min(56, max(18, (rect.width - 36) // max(1, len(raw))))
-        for index, row in enumerate(raw[:max(1, (rect.width - 36) // width)]):
-            box = pygame.Rect(rect.x + 18 + index * width, y + 24, width - 4, 28)
-            known = row["id"] is not None and (piece_type(row["id"]) != TURN or row["turn"])
-            pygame.draw.rect(self.screen, (36, 55, 48) if known else (80, 55, 28), box, border_radius=2)
-            label = str(row["id"]) + (row["turn"] or "") if known else "?"
-            img = self.small.render(label, True, OK if known else WARN)
-            self.screen.blit(img, (box.centerx - img.get_width() // 2, box.y + 6))
 
     def draw_race(self, game: Game, controls: str, overlay: Optional[str] = None, sub: str = "") -> None:
         self.frame()
