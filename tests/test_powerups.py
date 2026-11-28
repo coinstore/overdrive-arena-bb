@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 from anki.track import Piece, Track, START, STRAIGHT
 from game.game import (CarState, Game, HOOK_RANGE_MM, UTURN_MIN_ENERGY)
+from game.inputs import POWERUP
 
 
 def make_car(index=0):
@@ -125,15 +126,47 @@ class PowerupTests(unittest.TestCase):
         self.game.update_hook(self.car, True, self.now, 0.1)
         self.assertIs(self.car.hook_target, self.other)
 
-    def test_anchor_stops_and_costs_energy(self):
+    def test_anchor_stops_while_held_and_drains_energy(self):
         self.car.loadout.powerup = "anchor"
-        self.car.powerup_energy = 100.0
+        self.car.powerup_energy = 50.0
         self.game.start_anchor(self.car, self.now)
         self.assertTrue(self.car.anchor_active)
         self.assertEqual(self.car.powerup_energy, 50.0)
         self.assertEqual(self.car.speed_sent(), 0)
-        self.game.update_anchor(self.car, self.now + 2.6)
+        self.game.update_anchor(self.car, True, self.now + 1.0, 1.0)
+        self.assertTrue(self.car.anchor_active)
+        self.assertEqual(self.car.powerup_energy, 30.0)
+
+    def test_anchor_runs_until_energy_is_empty(self):
+        self.car.loadout.powerup = "anchor"
+        self.car.powerup_energy = 30.0
+        self.game.start_anchor(self.car, self.now)
+        self.game.update_anchor(self.car, True, self.now + 1.4, 1.4)
+        self.assertTrue(self.car.anchor_active)
+        self.assertLess(self.car.powerup_energy, 5.0)
+        self.game.update_anchor(self.car, True, self.now + 1.6, 0.2)
         self.assertFalse(self.car.anchor_active)
+        self.assertEqual(self.car.powerup_energy, 0.0)
+
+    def test_anchor_release_ends_it_and_resumes_the_old_target(self):
+        self.car.loadout.powerup = "anchor"
+        self.car.powerup_energy = 100.0
+        self.car.cruise_speed = 600.0
+        source = Mock()
+        source.pressed.return_value = False
+        source.held.side_effect = lambda action: action == POWERUP
+        source.throttle.return_value = 0.0
+        source.brake.return_value = 0.0
+        source.steer.return_value = 0.0
+        self.car.source = source
+        self.game.start_anchor(self.car, self.now)
+        self.game._human(self.car, 0.02, self.now + 0.2)
+        self.assertTrue(self.car.anchor_active)
+        self.assertEqual(self.car.speed_sent(), 0)
+        source.held.side_effect = lambda action: False
+        self.game._human(self.car, 0.02, self.now + 0.4)
+        self.assertFalse(self.car.anchor_active)
+        self.assertEqual(self.car.speed_sent(), 600)
 
     def test_booster_full_energy_lasts_about_two_and_a_half_seconds(self):
         self.car.loadout.powerup = "booster"

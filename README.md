@@ -199,8 +199,10 @@ traffic. A player already using the full 2000 command range needs no boost.
   The victim's commanded speed is reduced to 75 %, never below 300 mm/s. Full energy lasts 5 s. The
   attacker gets yellow front lights whenever the beam is held, even without a target; the victim gets a
   slow red tail pattern and a visible cable.
-- **Anchor** (press A): stops the car for 2.5 s and costs 50 powerup energy. The car remains vulnerable
-  and can still fire. Useful to let an opponent pass, avoid a mine or block a lane briefly.
+- **Anchor** (hold A): stops the car while the button is held, draining 20 powerup energy/s (a full bar
+  gives 5 s). Releasing A or running out of energy lets the car roll on at the target speed it had before
+  anchoring. The car remains vulnerable and can still fire. Useful to let an opponent pass, avoid a mine or
+  block a lane briefly.
 - **Booster** (hold A): raises the target to 160 % of the personal limit, capped at 2000 mm/s. Full energy
   lasts 2.5 s. It uses the same safety checks as the short straight boost and does not stack with it.
 - AI cars pick one weapon and one powerup at random for each battle and obey the same energy rules.

@@ -1182,7 +1182,7 @@ class Renderer:
         names = {"sniper": "SNIPER", "blaster": "BLASTER", "mine": "MINE",
                  "uturn": "U-TURN", "hook": "HOOK", "anchor": "ANCHOR", "booster": "BOOSTER"}
         stats = {"sniper": "LONG SHOT", "blaster": "SPREAD · 500 MM", "mine": "LANE TRAP",
-                 "uturn": "HOLD · REVERSE", "hook": "HOLD · SLOW", "anchor": "STOP 2.5 S",
+                 "uturn": "HOLD · REVERSE", "hook": "HOLD · SLOW", "anchor": "HOLD · STOP",
                  "booster": "HOLD · 160%"}
         tile_h = 104 if box.height >= 400 else 50
         compact = box.height < 400

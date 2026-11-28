@@ -110,8 +110,7 @@ HOOK_RANGE_MM = 2000.0
 HOOK_BREAK_MM = 2400.0
 HOOK_SLOW_FACTOR = 0.75
 HOOK_MIN_SPEED = 300.0
-ANCHOR_COST = 50.0
-ANCHOR_HOLD_S = 2.5
+ANCHOR_DRAIN = 20.0              # 100 % = 5 s; releasing or running empty lets the car roll on
 BOOSTER_MIN_ENERGY = 25.0
 BOOSTER_DRAIN = 40.0             # 100 % = 2.5 s
 BOOSTER_FACTOR = 1.6
@@ -314,7 +313,6 @@ class CarState:
         self.hooked_by: Optional["CarState"] = None
         self.hook_light_active = False
         self.booster_light_active = False
-        self.anchor_until = 0.0
         self.anchor_active = False
         self.booster_active = False
         self.booster_ready_at = 0.0
@@ -566,7 +564,7 @@ class CarState:
     def command_speed(self, desired: float, now: float, force: bool = False) -> None:
         if now < self.dead_until:
             speed = 0
-        elif self.anchor_active and now < self.anchor_until:
+        elif self.anchor_active:
             speed = 0
         else:
             speed = int(round(desired))
@@ -1360,7 +1358,6 @@ class Game:
             c.hooked_by = None
             c.hook_light_active = False
             c.booster_light_active = False
-            c.anchor_until = 0.0
             c.anchor_active = False
             c.booster_active = False
             c.booster_ready_at = 0.0
@@ -1882,7 +1879,6 @@ class Game:
         if src.pressed(I.BOOST):
             self.request_boost(c, now)
 
-        self.update_anchor(c, now)
         # Real input sources return a bool.  Mocks used by the offline tests
         # may return a Mock; only an explicit True counts as held.
         def held(action: int) -> bool:
@@ -1892,6 +1888,7 @@ class Game:
                 return False
 
         held_powerup = held(I.POWERUP)
+        self.update_anchor(c, held_powerup, now, dt)
         if c.loadout.powerup == "uturn":
             self.update_uturn(c, held_powerup, now, dt)
         elif c.loadout.powerup == "hook":
@@ -2262,7 +2259,7 @@ class Game:
                 self.log(f"{c.name} turns around (wrong way)", c.color)
             c.command_speed(min(self.ai_target_speed(c), 300), now)
             return
-        self.update_anchor(c, now)
+        self.update_anchor(c, False, now, dt)
         if c.anchor_active:
             c.command_speed(0, now)
             return
@@ -2650,20 +2647,28 @@ class Game:
             target.lights_unhook()
 
     def start_anchor(self, c: CarState, now: float) -> None:
-        if (c.loadout.powerup != "anchor" or c.anchor_active or c.powerup_energy < ANCHOR_COST
+        if (c.loadout.powerup != "anchor" or c.anchor_active or c.powerup_energy <= 0.0
                 or c.is_dead(now) or c.charging or not c.localized()):
             return
-        c.powerup_energy = max(0.0, c.powerup_energy - ANCHOR_COST)
         c.powerup_last_use_t = now
-        c.anchor_until = now + ANCHOR_HOLD_S
         c.anchor_active = True
-        c.hard_stop(now)
+        # Do not hard_stop(): it would forget the cruise target this car had
+        # before anchoring.  command_speed(0) stops the motor and keeps it.
+        c.command_speed(0, now, force=True)
         self.log(f"{c.name}: anchor", c.color)
 
-    def update_anchor(self, c: CarState, now: float) -> None:
-        if c.anchor_active and now >= c.anchor_until:
+    def update_anchor(self, c: CarState, held: bool, now: float, dt: float) -> None:
+        """Stay stopped while the button is held, then roll on at the old target."""
+        if not c.anchor_active:
+            return
+        if not held or c.powerup_energy <= 0.0:
             c.anchor_active = False
             c.powerup_last_use_t = now
+            return
+        c.powerup_energy = max(0.0, c.powerup_energy - ANCHOR_DRAIN * dt)
+        c.powerup_last_use_t = now
+        if c.powerup_energy <= 0.0:
+            c.anchor_active = False
 
     def booster_target(self, c: CarState) -> float:
         return min(BOOSTER_MAX_MM_S, c.max_speed * BOOSTER_FACTOR)
